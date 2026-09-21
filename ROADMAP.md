@@ -4,25 +4,29 @@
 
 ---
 
-## 📋 Phase 1: The Hand (Go MT5 Lib & Transport Layer)
-- [x] **Project & Architecture Initialization**
-  - [x] จัดโครงสร้างโฟลเดอร์ตาม Hexagonal Architecture (`internal/core/domain`, `internal/core/ports`, `internal/adapters`)
-  - [x] ตั้งค่า `app.env` และเขียน Config Adapter ดึงค่าด้วย `viper`
-  - [x] สร้าง `go.mod` และจัดการ Git Repositories / Git Commits
-- [ ] **Secondary Adapter (MT5 Listener - MQL5 Side)**
-  - [ ] เขียน MQL5 Expert Advisor (EA) ทำหน้าที่เป็น TCP Socket Listener (Port 5555)
-  - [ ] จัดการ Parsing JSON Request (`action`, `symbol`, `type`, `volume`) และส่ง `OrderSend()`
-  - [ ] ส่ง JSON Response กลับหา Go Client
-- [ ] **Secondary Adapter (MT5 Client - Go Side)**
-  - [ ] สร้าง `internal/adapters/mt5/tcp_client.go` อิมพลีเมนต์ `ports.MT5Port`
-  - [ ] เขียน Timeout, Auto-reconnect และ Error Handling สำหรับ Socket Connection
-- [ ] **Core Domain & Use Cases**
-  - [ ] นิยาม Models ใน `internal/core/domain` (`TradeOrder`, `OrderResult`, `Tick`)
-  - [ ] เขียน `TradeService` ใน `internal/core/services` สำหรับสั่ง Execute Trade
+🟢 Phase 1: The Hand (Go MT5 Lib & Transport Layer)
+[x] Project & Architecture Initialization
+[x] จัดโครงสร้างโฟลเดอร์ตาม Hexagonal Architecture (internal/core/domain, internal/core/ports, internal/adapters, cmd/app)
+[x] ตั้งค่า Config Adapter ดึงค่าด้วย Viper / Environment Variables
+[x] ตั้งค่า Makefile และ .air.toml สำหรับ Hot Reloading และ Developer Experience
+[x] บันทึก Version Control ผ่าน Git Commits
+[x] Core Domain & Use Cases
+[x] นิยาม Domain Models ใน internal/core/domain (TradeRequest, TradeResponse)
+[x] เขียน TradeService ใน internal/core/services สำหรับสั่ง Execute Trade
+[x] อิมพลีเมนต์ Validation Rules (Symbol, Volume > 0, Action) และ Risk Guard Logic (Max Lot Limit)
+[x] เขียน Unit Test & Integration Test ฝั่ง Go ครอบคลุมทุก Edge Case และผ่าน 100%
+[ ] Secondary Adapter (MT5 Listener - MQL5 Side)
+[ ] เขียน MQL5 Expert Advisor (EA) ทำหน้าที่เป็น TCP Socket Listener (Port 5555)
+[ ] จัดการ Parsing JSON Request (action, symbol, type, volume) และส่ง OrderSend()
+[ ] ส่ง JSON Response กลับหา Go Client
+[ ] Secondary Adapter (MT5 Client - Go Side)
+[ ] สร้าง internal/adapters/mt5/tcp_adapter.go อิมพลีเมนต์ ports.MT5Port
+[ ] เขียน Timeout, Auto-reconnect และ Error Handling สำหรับ Socket Connection
 
 ---
 
 ## 🧠 Phase 2: The Brain (Go Quant Engine & Strategy)
+
 - [ ] **Real-time Market Data Stream**
   - [ ] เพิ่ม Socket Port (เช่น 5556) สำหรับ PUB/SUB หรือ Stream Price จาก MT5
   - [ ] สร้าง In-memory Ring Buffer สำหรับเก็บ Time Series Price Data ใน Go
@@ -37,6 +41,7 @@
 ---
 
 ## 🟣 Phase 3: The Intelligence (Claude AI Integration)
+
 - [ ] **Claude AI Secondary Adapter**
   - [ ] สร้าง `internal/adapters/claude/` เชื่อมต่อ Anthropic Claude API
   - [ ] นิยาม `ports.AIPort` สำหรับวิเคราะห์ Sentiment และ Risk Level
@@ -49,6 +54,7 @@
 ---
 
 ## 🧪 Phase 4: Testing & Hardening
+
 - [ ] **Unit & Integration Testing**
   - [ ] เขียน Unit Test สำหรับ `TradeService` โดยใช้ Mock `MT5Port` (ไม่ต้องต่อ MT5 จริง)
   - [ ] ทำ Integration Test บน บัญชี Demo ของ MT5
