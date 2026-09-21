@@ -11,10 +11,13 @@ import (
 )
 
 var (
-	ErrInvalidVolume = errors.New("trade volume must be greater than 0")
-	ErrInvalidSymbol = errors.New("symbol cannot be empty")
-	ErrInvalidAction = errors.New("invalid trade action (must be BUY, SELL or CLOSE)")
+	ErrInvalidVolume      = errors.New("trade volume must be greater than 0")
+	ErrInvalidSymbol      = errors.New("symbol cannot be empty")
+	ErrInvalidAction      = errors.New("invalid trade action (must be BUY, SELL or CLOSE)")
+	ErrRiskGuardTriggered = errors.New("risk guard: trade volume exceeds limit")
 )
+
+const MaxAllowedVolume = 10.0
 
 type TradeService struct {
 	mt5Port ports.MT5Port
@@ -25,12 +28,22 @@ func NewTradeService(mt5Port ports.MT5Port) *TradeService {
 }
 
 func (s *TradeService) ExecuteTrade(ctx context.Context, req domain.TradeRequest) (*domain.TradeResponse, error) {
-	if err := s.validateRequest(req); err != nil {
-		return nil, fmt.Errorf("validation failed: %w", &err)
+	if req.Symbol == "" {
+		return nil, fmt.Errorf("validation failed: %w", ErrInvalidSymbol)
+	}
+	if req.Volume <= 0 {
+		return nil, fmt.Errorf("validation failed: %w", ErrInvalidVolume)
+	}
+	if req.Action != "BUY" && req.Action != "SELL" && req.Action != "CLOSE" {
+		return nil, fmt.Errorf("validation failed: %w", ErrInvalidAction)
 	}
 
-	if req.Volume > 10.0 {
-		return nil, fmt.Errorf("risk guard triggered: volume %.2f exceeds maximum limit of 10.0", req.Volume)
+	if err := s.validateRequest(req); err != nil {
+		return nil, fmt.Errorf("validation failed: %w", err)
+	}
+
+	if req.Volume > MaxAllowedVolume { 
+		return nil, fmt.Errorf("risk check failed: %w", ErrRiskGuardTriggered)
 	}
 
 	log.Printf("[TradeService] Executing order: Action=%s, Symbol=%s, Volume=%.2f", req.Action, req.Symbol, req.Volume)
@@ -38,7 +51,7 @@ func (s *TradeService) ExecuteTrade(ctx context.Context, req domain.TradeRequest
 	resp, err := s.mt5Port.SendOrder(ctx, req)
 	if err != nil {
 		log.Printf("[TradeService] Order execution failed via MT5Port: %v", err)
-		return nil, fmt.Errorf("failed to execute order on MT5: %w", &err)
+		return nil, fmt.Errorf("failed to execute order on MT5: %v", &err)
 	}
 
 	if !resp.Success {
