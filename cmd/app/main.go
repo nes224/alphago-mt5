@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/nes224/alphago-mt5/internal/adapters/config"
 	"github.com/nes224/alphago-mt5/internal/adapters/mt5"
@@ -28,8 +29,17 @@ func main() {
 
 	tradeService := services.NewTradeService(mt5Adapter)
 
-	ctx := context.Background()
-	result, err := tradeService.PlaceTrade(ctx, "EURUSD", domain.OrderTypeBuy, 0.01)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req := domain.TradeRequest{
+		Action:   "BUY",
+		Symbol:   "EURUSD",
+		Volume:   0.01,
+		SL:       0.0,
+		TP:       0.0,
+		MagicNum: 123456,
+	}
+	result, err := tradeService.ExecuteTrade(ctx, req)
 	if err != nil {
 		log.Fatalf("Trade Execution Failed: %v", err)
 	}

@@ -16,6 +16,8 @@ type tcpAdapter struct {
 	conn net.Conn
 }
 
+var _ ports.MT5Port = (*tcpAdapter)(nil)
+
 func NewTCPAdapter(host string, port int, timeoutSeconds int) (ports.MT5Port, error) {
 	address := fmt.Sprintf("%s:%d", host, port)
 	conn, err := net.DialTimeout("tcp", address, time.Duration(timeoutSeconds)*time.Second)
@@ -26,17 +28,14 @@ func NewTCPAdapter(host string, port int, timeoutSeconds int) (ports.MT5Port, er
 	return &tcpAdapter{conn: conn}, nil
 }
 
-func (a *tcpAdapter) ExecuteOrder(ctx context.Context, order domain.TradeOrder) (*domain.OrderResult, error) {
-	payload := map[string]interface{}{
-		"action": "TRADE",
-		"symbol": order.Symbol,
-		"type":   string(order.Type),
-		"volume": order.Volume,
+func (a *tcpAdapter) SendOrder(ctx context.Context, req domain.TradeRequest) (*domain.TradeResponse, error) {
+	data, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal trade request: %w", err)
 	}
 
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal order: %w", err)
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = a.conn.SetDeadline(deadline)
 	}
 
 	_, err = a.conn.Write(append(data, '\n'))
@@ -47,23 +46,20 @@ func (a *tcpAdapter) ExecuteOrder(ctx context.Context, order domain.TradeOrder) 
 	reader := bufio.NewReader(a.conn)
 	resBytes, err := reader.ReadBytes('\n')
 	if err != nil {
-		return nil, fmt.Errorf("failed to read MT5 response: %w", err)
+		return nil, fmt.Errorf("failed to read response from MT5: %w", err)
 	}
 
-	var result domain.OrderResult
-	if err := json.Unmarshal(resBytes, &result); err != nil {
+	var resp domain.TradeResponse
+	if err := json.Unmarshal(resBytes, &resp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal MT5 response: %w", err)
 	}
 
-
-	return &result, nil
+	return &resp, nil
 }
-
 
 func (a *tcpAdapter) Close() error {
 	if a.conn != nil {
 		return a.conn.Close()
 	}
-
 	return nil
 }

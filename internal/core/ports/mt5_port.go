@@ -5,8 +5,7 @@ import (
 
 	"github.com/nes224/alphago-mt5/internal/core/domain"
 )
-
 type MT5Port interface {
-	ExecuteOrder(ctx context.Context, order domain.TradeOrder) (*domain.OrderResult, error)
+	SendOrder(ctx context.Context, req domain.TradeRequest) (*domain.TradeResponse, error)
 	Close() error
 }

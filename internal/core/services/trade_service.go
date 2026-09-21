@@ -2,30 +2,67 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 
 	"github.com/nes224/alphago-mt5/internal/core/domain"
 	"github.com/nes224/alphago-mt5/internal/core/ports"
 )
 
+var (
+	ErrInvalidVolume = errors.New("trade volume must be greater than 0")
+	ErrInvalidSymbol = errors.New("symbol cannot be empty")
+	ErrInvalidAction = errors.New("invalid trade action (must be BUY, SELL or CLOSE)")
+)
+
 type TradeService struct {
-	mt5Adapter ports.MT5Port
+	mt5Port ports.MT5Port
 }
 
-func NewTradeService(mt5Adapter ports.MT5Port) *TradeService {
-	return &TradeService{mt5Adapter: mt5Adapter}
+func NewTradeService(mt5Port ports.MT5Port) *TradeService {
+	return &TradeService{mt5Port: mt5Port}
 }
 
-func (s *TradeService) PlaceTrade(ctx context.Context, symbol string, orderType domain.OrderType, volume float64) (*domain.OrderResult, error) {
-	if volume <= 0 {
-		return nil, fmt.Errorf("invalid volume: must be greater than 0")
+func (s *TradeService) ExecuteTrade(ctx context.Context, req domain.TradeRequest) (*domain.TradeResponse, error) {
+	if err := s.validateRequest(req); err != nil {
+		return nil, fmt.Errorf("validation failed: %w", &err)
 	}
 
-	order := domain.TradeOrder{
-		Symbol: symbol,
-		Type:   orderType,
-		Volume: volume,
+	if req.Volume > 10.0 {
+		return nil, fmt.Errorf("risk guard triggered: volume %.2f exceeds maximum limit of 10.0", req.Volume)
 	}
 
-	return s.mt5Adapter.ExecuteOrder(ctx, order)
+	log.Printf("[TradeService] Executing order: Action=%s, Symbol=%s, Volume=%.2f", req.Action, req.Symbol, req.Volume)
+
+	resp, err := s.mt5Port.SendOrder(ctx, req)
+	if err != nil {
+		log.Printf("[TradeService] Order execution failed via MT5Port: %v", err)
+		return nil, fmt.Errorf("failed to execute order on MT5: %w", &err)
+	}
+
+	if !resp.Success {
+		log.Printf("[TradeService] Order rejected by MT5: %s", resp.Message)
+		return resp, nil
+	}
+
+	log.Printf("[TradeService] Order executed successfully! Ticket ID: %d", resp.Ticket)
+	return resp, nil
+
+}
+
+func (s *TradeService) validateRequest(req domain.TradeRequest) error {
+	if req.Symbol == "" {
+		return ErrInvalidSymbol
+	}
+
+	if req.Volume <= 0 {
+		return ErrInvalidVolume
+	}
+
+	if req.Action != "BUY" && req.Action != "SELL" && req.Action != "CLOSE" {
+		return ErrInvalidAction
+	}
+
+	return nil
 }
