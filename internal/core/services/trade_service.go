@@ -28,30 +28,23 @@ func NewTradeService(mt5Port ports.MT5Port) *TradeService {
 }
 
 func (s *TradeService) ExecuteTrade(ctx context.Context, req domain.TradeRequest) (*domain.TradeResponse, error) {
-	if req.Symbol == "" {
-		return nil, fmt.Errorf("validation failed: %w", ErrInvalidSymbol)
-	}
-	if req.Volume <= 0 {
-		return nil, fmt.Errorf("validation failed: %w", ErrInvalidVolume)
-	}
-	if req.Action != "BUY" && req.Action != "SELL" && req.Action != "CLOSE" {
-		return nil, fmt.Errorf("validation failed: %w", ErrInvalidAction)
-	}
-
+	// 1. Validation Logic
 	if err := s.validateRequest(req); err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	if req.Volume > MaxAllowedVolume { 
+	// 2. Risk Check
+	if req.Volume > MaxAllowedVolume {
 		return nil, fmt.Errorf("risk check failed: %w", ErrRiskGuardTriggered)
 	}
 
 	log.Printf("[TradeService] Executing order: Action=%s, Symbol=%s, Volume=%.2f", req.Action, req.Symbol, req.Volume)
 
+	// 3. Send to Port
 	resp, err := s.mt5Port.SendOrder(ctx, req)
 	if err != nil {
 		log.Printf("[TradeService] Order execution failed via MT5Port: %v", err)
-		return nil, fmt.Errorf("failed to execute order on MT5: %v", &err)
+		return nil, fmt.Errorf("failed to execute order on MT5: %w", err)
 	}
 
 	if !resp.Success {
@@ -61,7 +54,6 @@ func (s *TradeService) ExecuteTrade(ctx context.Context, req domain.TradeRequest
 
 	log.Printf("[TradeService] Order executed successfully! Ticket ID: %d", resp.Ticket)
 	return resp, nil
-
 }
 
 func (s *TradeService) validateRequest(req domain.TradeRequest) error {

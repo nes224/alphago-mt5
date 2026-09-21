@@ -63,10 +63,7 @@ func TestTCPAdapter_Integration(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	adapter, err := mt5.NewTCPAdapter("127.0.0.1", 5555, 2)
-	if err != nil {
-		t.Fatalf("Failed to connect to TCP adapter: %v", err)
-	}
+	adapter := mt5.NewTCPAdapter("127.0.0.1:5555", 2*time.Second)
 	defer adapter.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
