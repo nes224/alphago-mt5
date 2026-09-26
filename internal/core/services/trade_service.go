@@ -15,6 +15,7 @@ var (
 	ErrInvalidSymbol      = errors.New("symbol cannot be empty")
 	ErrInvalidAction      = errors.New("invalid trade action (must be BUY, SELL or CLOSE)")
 	ErrRiskGuardTriggered = errors.New("risk guard: trade volume exceeds limit")
+	ErrTicketRequired     = errors.New("ticket ID is required for CLOSE or MODIFY action")
 )
 
 const MaxAllowedVolume = 10.0
@@ -33,12 +34,12 @@ func (s *TradeService) ExecuteTrade(ctx context.Context, req domain.TradeRequest
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	// 2. Risk Check
-	if req.Volume > MaxAllowedVolume {
+	if (req.Action == domain.ActionBuy || req.Action == domain.ActionSell) && req.Volume > MaxAllowedVolume {
 		return nil, fmt.Errorf("risk check failed: %w", ErrRiskGuardTriggered)
 	}
 
-	log.Printf("[TradeService] Executing order: Action=%s, Symbol=%s, Volume=%.2f", req.Action, req.Symbol, req.Volume)
+	log.Printf("[TradeService] Executing order: Action=%s, Symbol=%s, Ticket=%d, Volume=%.2f, SL=%.5f, TP=%.5f",
+		req.Action, req.Symbol, req.Ticket, req.Volume, req.SL, req.TP)
 
 	// 3. Send to Port
 	resp, err := s.mt5Port.SendOrder(ctx, req)
@@ -47,7 +48,7 @@ func (s *TradeService) ExecuteTrade(ctx context.Context, req domain.TradeRequest
 		return nil, fmt.Errorf("failed to execute order on MT5: %w", err)
 	}
 
-	if !resp.Success {
+	if !resp.IsSuccess() {
 		log.Printf("[TradeService] Order rejected by MT5: %s", resp.Message)
 		return resp, nil
 	}
@@ -57,17 +58,24 @@ func (s *TradeService) ExecuteTrade(ctx context.Context, req domain.TradeRequest
 }
 
 func (s *TradeService) validateRequest(req domain.TradeRequest) error {
-	if req.Symbol == "" {
-		return ErrInvalidSymbol
-	}
-
-	if req.Volume <= 0 {
-		return ErrInvalidVolume
-	}
-
-	if req.Action != "BUY" && req.Action != "SELL" && req.Action != "CLOSE" {
+	switch req.Action {
+	case domain.ActionBuy, domain.ActionSell:
+		if req.Symbol == "" {
+			return ErrInvalidSymbol
+		}
+		if req.Volume <= 0 {
+			return ErrInvalidVolume
+		}
+	case domain.ActionClose:
+		if req.Ticket == 0 && req.Symbol == "" {
+			return ErrTicketRequired
+		}
+	case domain.ActionModify:
+		if req.Ticket == 0 {
+			return ErrTicketRequired
+		}
+	default:
 		return ErrInvalidAction
 	}
-
 	return nil
 }

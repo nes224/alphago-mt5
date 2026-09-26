@@ -21,7 +21,7 @@ func (m *MockMT5Adapter) SendOrder(ctx context.Context, req domain.TradeRequest)
 		return m.SendOrderFunc(ctx, req)
 	}
 
-	return &domain.TradeResponse{Success: true, Ticket: 100001, Message: "Success"}, nil
+	return &domain.TradeResponse{Status: "SUCCESS", Ticket: 100001, Message: "Success"}, nil
 }
 
 func (m *MockMT5Adapter) Close() error {
@@ -101,7 +101,7 @@ func TestTradeService_ExecuteTrade_Success(t *testing.T) {
 	mockAdapter := &MockMT5Adapter{
 		SendOrderFunc: func(ctx context.Context, req domain.TradeRequest) (*domain.TradeResponse, error) {
 			return &domain.TradeResponse{
-				Success:   true,
+				Status:   "SUCCESS",
 				Ticket:    99999,
 				Price:     1.0850,
 				Message:   "Order Executed",
@@ -125,7 +125,7 @@ func TestTradeService_ExecuteTrade_Success(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !resp.Success || resp.Ticket != 99999 {
+	if !resp.IsSuccess() || resp.Ticket != 99999 {
 		t.Errorf("expected ticket 99999, got %d", resp.Ticket)
 	}
 

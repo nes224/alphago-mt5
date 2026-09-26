@@ -17,7 +17,7 @@ func NewTradeHandler(tradeService *services.TradeService) *TradeHandler {
 }
 
 // POST /api/v1/trade
-func (h *TradeHandler) ExecuteTrade(c *gin.Context) {
+func (h *TradeHandler) PlaceOrder(c *gin.Context) {
 	var req domain.TradeRequest
 
 	// Bind JSON Body เข้า domain.TradeRequest
@@ -34,6 +34,42 @@ func (h *TradeHandler) ExecuteTrade(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": err.Error(),
 		})
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+func (h *TradeHandler) CloseOrder(c *gin.Context) {
+	var req domain.TradeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body:" + err.Error()})
+		return
+	}
+
+	req.Action = domain.ActionClose
+
+	resp, err := h.tradeService.ExecuteTrade(c.Request.Context(), req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+func (h *TradeHandler) ModifyOder(c *gin.Context) {
+	var req domain.TradeRequest
+	if err := c.ShouldBindJSON(req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body:" + err.Error()})
+		return
+	}
+
+	req.Action = domain.ActionModify
+
+	resp, err := h.tradeService.ExecuteTrade(c.Request.Context(), req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 

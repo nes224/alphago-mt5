@@ -39,7 +39,7 @@ func startMockMT5Server(t *testing.T, address string) func() {
 		}
 
 		resp := domain.TradeResponse{
-			Success:   true,
+			Status:    "SUCCESS",
 			Ticket:    88888,
 			Price:     1.0850,
 			Message:   "Mock Order Placed Successfully",
@@ -81,7 +81,7 @@ func TestTCPAdapter_Integration(t *testing.T) {
 		t.Fatalf("Integration test failed on SendOrder: %v", err)
 	}
 
-	if !resp.Success {
+	if !resp.IsSuccess() {
 		t.Errorf("Expected success response, got false")
 	}
 

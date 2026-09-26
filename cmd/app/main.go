@@ -38,7 +38,9 @@ func main() {
 
 	v1 := r.Group("/api/v1")
 	{
-		v1.POST("/trade", tradeHandler.ExecuteTrade)
+		v1.POST("/trade", tradeHandler.PlaceOrder)
+		v1.POST("/orders/close", tradeHandler.CloseOrder)
+		v1.PUT("/orders/modify", tradeHandler.ModifyOder)
 	}
 
 	serverPort := ":8080"
