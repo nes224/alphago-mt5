@@ -15,13 +15,13 @@
 [x] เขียน TradeService ใน internal/core/services สำหรับสั่ง Execute Trade
 [x] อิมพลีเมนต์ Validation Rules (Symbol, Volume > 0, Action) และ Risk Guard Logic (Max Lot Limit)
 [x] เขียน Unit Test & Integration Test ฝั่ง Go ครอบคลุมทุก Edge Case และผ่าน 100%
-[ ] Secondary Adapter (MT5 Listener - MQL5 Side)
-[ ] เขียน MQL5 Expert Advisor (EA) ทำหน้าที่เป็น TCP Socket Listener (Port 5555)
-[ ] จัดการ Parsing JSON Request (action, symbol, type, volume) และส่ง OrderSend()
-[ ] ส่ง JSON Response กลับหา Go Client
-[ ] Secondary Adapter (MT5 Client - Go Side)
-[ ] สร้าง internal/adapters/mt5/tcp_adapter.go อิมพลีเมนต์ ports.MT5Port
-[ ] เขียน Timeout, Auto-reconnect และ Error Handling สำหรับ Socket Connection
+[x] Secondary Adapter (MT5 Listener - MQL5 Side)
+[x] เขียน MQL5 Expert Advisor (EA) ทำหน้าที่เป็น TCP Socket Listener (Port 5555)
+[x] จัดการ Parsing JSON Request (action, symbol, type, volume) และส่ง OrderSend()
+[x] ส่ง JSON Response กลับหา Go Client
+[x] Secondary Adapter (MT5 Client - Go Side)
+[x] สร้าง internal/adapters/mt5/tcp_adapter.go อิมพลีเมนต์ ports.MT5Port
+[x] เขียน Timeout, Auto-reconnect และ Error Handling สำหรับ Socket Connection
 
 ---
 
