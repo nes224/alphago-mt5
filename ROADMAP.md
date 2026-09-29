@@ -27,8 +27,8 @@
 
 ## 🧠 Phase 2: The Brain (Go Quant Engine & Strategy)
 
-- [ ] **Real-time Market Data Stream**
-  - [ ] เพิ่ม Socket Port (เช่น 5556) สำหรับ PUB/SUB หรือ Stream Price จาก MT5
+- [x ] **Real-time Market Data Stream**
+  - [x] เพิ่ม Socket Port (เช่น 5556) สำหรับ PUB/SUB หรือ Stream Price จาก MT5
   - [ ] สร้าง In-memory Ring Buffer สำหรับเก็บ Time Series Price Data ใน Go
 - [ ] **Technical Analysis Indicators**
   - [ ] เขียน Pure Go Indicator Functions (`SMA`, `EMA`, `RSI`, `MACD`, `ATR`)
