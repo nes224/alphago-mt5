@@ -11,4 +11,6 @@ type QuantEngine interface {
 	RegisterStrategy(s QuantStrategy)
 	PushTick(tick domain.Tick)
 	SignalChannel() <-chan domain.OrderSignal
+	GetLatestMetrics(symbol string) domain.TickMetrics
+	UpdateMetrics(symbol string, m domain.TickMetrics)
 }

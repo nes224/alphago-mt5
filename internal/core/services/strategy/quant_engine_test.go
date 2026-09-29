@@ -194,3 +194,48 @@ func TestQuantEngine_ConcurrentPush_RaceCondition(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 }
+
+func TestCalculateMetrics_OIDeltaAndVelocities(t *testing.T) {
+	engine := strategy.NewQuantEngine(100, 5)
+
+	t1 := time.Now()
+	tick1 := domain.Tick{
+		Symbol:       "XAUUSDm",
+		Bid:          2000.0,
+		Ask:          2002.0,
+		OpenInterest: 1000,
+		Timestamp:    t1,
+	}
+
+	// Tick แรก: OI Delta / Velocities ต้องเป็น 0 ทั้งหมด
+	m1 := engine.ProcessTick(tick1)
+	if m1.OIDelta != 0 || m1.OIVelocity != 0 || m1.PriceVelocity != 0 {
+		t.Errorf("Tick 1 failed: expected zero deltas, got OIDelta=%d, OIVelocity=%f, PriceVel=%f",
+			m1.OIDelta, m1.OIVelocity, m1.PriceVelocity)
+	}
+
+	// Tick สอง: ผ่านไป 2 วินาที, OI เพิ่ม 100 (1000 -> 1100), MidPrice เพิ่ม $10 (2001 -> 2011)
+	t2 := t1.Add(2 * time.Second)
+	tick2 := domain.Tick{
+		Symbol:       "XAUUSDm",
+		Bid:          2010.0,
+		Ask:          2012.0,
+		OpenInterest: 1100,
+		Timestamp:    t2,
+	}
+
+	m2 := engine.ProcessTick(tick2)
+
+	// OIDelta = 100
+	if m2.OIDelta != 100 {
+		t.Errorf("Expected OIDelta 100, got %d", m2.OIDelta)
+	}
+	// OIVelocity = 100 / 2s = 50.0
+	if m2.OIVelocity != 50.0 {
+		t.Errorf("Expected OIVelocity 50.0, got %f", m2.OIVelocity)
+	}
+	// PriceVelocity = $10 / 2s = 5.0
+	if m2.PriceVelocity != 5.0 {
+		t.Errorf("Expected PriceVelocity 5.0, got %f", m2.PriceVelocity)
+	}
+}

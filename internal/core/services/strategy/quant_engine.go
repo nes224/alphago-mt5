@@ -10,13 +10,14 @@ import (
 )
 
 type QuantEngine struct {
-	mu           sync.RWMutex
-	strategies   []ports.QuantStrategy
-	tickChan     chan domain.Tick
-	signalChan   chan domain.OrderSignal
-	lastTickMap  map[string]domain.Tick
-	priceHistory map[string][]float64
-	windowSize   int
+	mu            sync.RWMutex
+	strategies    []ports.QuantStrategy
+	latestMetrics map[string]domain.TickMetrics
+	tickChan      chan domain.Tick
+	signalChan    chan domain.OrderSignal
+	lastTickMap   map[string]domain.Tick
+	priceHistory  map[string][]float64
+	windowSize    int
 }
 
 func NewQuantEngine(bufferSize int, windowSize int) *QuantEngine {
@@ -60,23 +61,26 @@ func (e *QuantEngine) Start(ctx context.Context) {
 	}()
 }
 
-
 func (e *QuantEngine) calculateMetrics(tick domain.Tick) domain.TickMetrics {
 	lastTick, exists := e.lastTickMap[tick.Symbol]
 	midPrice := tick.MidPrice()
 
 	var oiDelta int64 = 0
-	var velocity float64
+	var oiVelocity float64 = 0
+	var priceVelocity float64 = 0
 
 	if exists {
 		oiDelta = tick.OpenInterest - lastTick.OpenInterest
 
-		timeDiff := tick.Timestamp.Sub(lastTick.Timestamp).Seconds()
-		if timeDiff > 0 {
-			priceDiff := midPrice - ((lastTick.Bid + lastTick.Ask) / 2.0)
-			velocity = priceDiff / timeDiff
+		timeDelta := tick.Timestamp.Sub(lastTick.Timestamp).Seconds()
+		if timeDelta > 0 {
+			oiVelocity = float64(oiDelta) / timeDelta
+			priceDelta := midPrice - lastTick.MidPrice()
+			priceVelocity = priceDelta / timeDelta
 		}
 	}
+
+	e.lastTickMap[tick.Symbol] = tick
 
 	history := e.priceHistory[tick.Symbol]
 
@@ -93,9 +97,10 @@ func (e *QuantEngine) calculateMetrics(tick domain.Tick) domain.TickMetrics {
 		Bid:           tick.Bid,
 		Ask:           tick.Ask,
 		Spread:        tick.Spread(),
-		PriceVelocity: velocity,
-		OpenInterest:  tick.OpenInterest,
+		PriceVelocity: priceVelocity,
 		OIDelta:       oiDelta,
+		OIVelocity:    oiVelocity,
+		OpenInterest:  tick.OpenInterest,
 		Mean:          mean,
 		StdDev:        stdDev,
 		ZScore:        zScore,
@@ -144,4 +149,25 @@ func (e *QuantEngine) ProcessTick(tick domain.Tick) domain.TickMetrics {
 
 	e.lastTickMap[tick.Symbol] = tick
 	return metrics
+}
+
+func (e *QuantEngine) GetLatestMetrics(symbol string) domain.TickMetrics {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	if m, exists := e.latestMetrics[symbol]; exists {
+		return m
+	}
+
+	return domain.TickMetrics{}
+}
+
+func (e *QuantEngine) UpdateMetrics(symbol string, m domain.TickMetrics) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.latestMetrics == nil {
+		e.latestMetrics = make(map[string]domain.TickMetrics)
+	}
+	e.latestMetrics[symbol] = m
 }
