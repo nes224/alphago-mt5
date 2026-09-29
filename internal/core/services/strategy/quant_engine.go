@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"context"
+	"math"
 	"sync"
 
 	"github.com/nes224/alphago-mt5/internal/core/domain"
@@ -53,32 +54,23 @@ func (e *QuantEngine) Start(ctx context.Context) {
 				if !ok {
 					return
 				}
-				e.processTick(tick)
+				e.ProcessTick(tick)
 			}
 		}
 	}()
 }
 
-func (e *QuantEngine) processTick(tick domain.Tick) {
-	e.mu.Lock()
-	metrics := e.calculateMetrics(tick)
-
-	for _, s := range e.strategies {
-		if signal := s.OnTick(tick, metrics); signal != nil {
-			e.signalChan <- *signal
-		}
-	}
-
-	e.lastTickMap[tick.Symbol] = tick
-	e.mu.Unlock()
-}
 
 func (e *QuantEngine) calculateMetrics(tick domain.Tick) domain.TickMetrics {
 	lastTick, exists := e.lastTickMap[tick.Symbol]
-	midPrice := (tick.Bid + tick.Ask) / 2.0
+	midPrice := tick.MidPrice()
 
+	var oiDelta int64 = 0
 	var velocity float64
+
 	if exists {
+		oiDelta = tick.OpenInterest - lastTick.OpenInterest
+
 		timeDiff := tick.Timestamp.Sub(lastTick.Timestamp).Seconds()
 		if timeDiff > 0 {
 			priceDiff := midPrice - ((lastTick.Bid + lastTick.Ask) / 2.0)
@@ -87,6 +79,9 @@ func (e *QuantEngine) calculateMetrics(tick domain.Tick) domain.TickMetrics {
 	}
 
 	history := e.priceHistory[tick.Symbol]
+
+	mean, stdDev, zScore := e.calculateZScore(history, midPrice)
+
 	history = append(history, midPrice)
 	if len(history) > e.windowSize {
 		history = history[1:]
@@ -97,8 +92,56 @@ func (e *QuantEngine) calculateMetrics(tick domain.Tick) domain.TickMetrics {
 		Symbol:        tick.Symbol,
 		Bid:           tick.Bid,
 		Ask:           tick.Ask,
-		Spread:        tick.Ask - tick.Bid,
+		Spread:        tick.Spread(),
 		PriceVelocity: velocity,
+		OpenInterest:  tick.OpenInterest,
+		OIDelta:       oiDelta,
+		Mean:          mean,
+		StdDev:        stdDev,
+		ZScore:        zScore,
 		Timestamp:     tick.Timestamp,
 	}
+}
+
+func (e *QuantEngine) calculateZScore(data []float64, currentPrice float64) (mean float64, stdDev float64, zScore float64) {
+	n := float64(len(data))
+	if n == 0 {
+		return 0, 0, 0
+	}
+
+	var sum float64
+	for _, v := range data {
+		sum += v
+	}
+
+	mean = sum / n
+
+	var varianceSum float64
+	for _, v := range data {
+		varianceSum += math.Pow(v-mean, 2)
+	}
+
+	stdDev = math.Sqrt(varianceSum / n)
+
+	if stdDev > 0 {
+		zScore = (currentPrice - mean) / stdDev
+	}
+
+	return mean, stdDev, zScore
+}
+
+func (e *QuantEngine) ProcessTick(tick domain.Tick) domain.TickMetrics {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	metrics := e.calculateMetrics(tick)
+
+	for _, s := range e.strategies {
+		if signal := s.OnTick(tick, metrics); signal != nil {
+			e.signalChan <- *signal
+		}
+	}
+
+	e.lastTickMap[tick.Symbol] = tick
+	return metrics
 }

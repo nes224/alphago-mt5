@@ -22,10 +22,12 @@ type StreamAdapter struct {
 }
 
 type rawTick struct {
-	Symbol string  `json:"symbol"`
-	Bid    float64 `json:"bid"`
-	Ask    float64 `json:"ask"`
-	Time   string  `json:"time"`
+	Symbol       string  `json:"symbol"`
+	Bid          float64 `json:"bid"`
+	Ask          float64 `json:"ask"`
+	Volume       float64 `json:"volume"`
+	OpenInterest int64   `json:"open_interest"`
+	Time         string  `json:"time"`
 }
 
 func NewStreamAdapter(addr string) *StreamAdapter {
