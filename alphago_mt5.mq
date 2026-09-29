@@ -1,10 +1,10 @@
 //+------------------------------------------------------------------+
-//|                                             AlphaGo_Listener.mq5 |
-//|                                  Copyright 2026, AlphaGo Trading |
+//|                                              AlphaGo_Listener.mq5 |
+//|                                   Copyright 2026, AlphaGo Trading |
 //+------------------------------------------------------------------+
 #property copyright "AlphaGo Trading System"
 #property link      "https://github.com/nes224/alphago-mt5"
-#property version   "1.00"
+#property version   "1.10"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -31,14 +31,43 @@
 #define INVALID_SOCKET_VAL 0xFFFFFFFF
 
 //--- Inputs
-input ushort InpServerPort = 5555;
-input uint   InpMaxBuffer   = 4096;
+input ushort InpCommandPort = 5555; // Port สำหรับ Order Execution
+input ushort InpStreamPort  = 5556; // Port สำหรับ Real-time Price Stream
+input uint   InpMaxBuffer    = 4096;
 
 //--- Globals
 CTrade g_trade;
-uint   g_server_socket = INVALID_SOCKET_VAL;
-uint   g_client_socket = INVALID_SOCKET_VAL;
+uint   g_cmd_server_socket  = INVALID_SOCKET_VAL;
+uint   g_cmd_client_socket  = INVALID_SOCKET_VAL;
+
+uint   g_stream_server_socket = INVALID_SOCKET_VAL;
+uint   g_stream_client_socket = INVALID_SOCKET_VAL;
+
 uchar  g_rx_buffer[];
+
+// Helper Bind Socket
+uint CreateAndBindSocket(ushort port)
+{
+   uint sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+   if(sock == INVALID_SOCKET_VAL) return INVALID_SOCKET_VAL;
+
+   uint nonblock = 1;
+   ioctlsocket(sock, FIONBIO, nonblock);
+
+   uchar sockaddr[16];
+   ArrayInitialize(sockaddr, 0);
+   sockaddr[0] = AF_INET & 0xFF;
+   sockaddr[1] = (AF_INET >> 8) & 0xFF;
+   sockaddr[2] = (uchar)((port >> 8) & 0xFF);
+   sockaddr[3] = (uchar)(port & 0xFF);
+
+   if(bind(sock, sockaddr, 16) != 0 || listen(sock, 5) != 0)
+   {
+      closesocket(sock);
+      return INVALID_SOCKET_VAL;
+   }
+   return sock;
+}
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -46,61 +75,35 @@ uchar  g_rx_buffer[];
 int OnInit()
 {
    ArrayResize(g_rx_buffer, (int)InpMaxBuffer);
-
    g_trade.SetTypeFilling(ORDER_FILLING_IOC);
 
-   // 1. Initialize Winsock
    uchar wsaData[400];
    if(WSAStartup(0x0202, wsaData) != 0)
    {
-      Print("WSAStartup failed. Error: ", GetLastError());
+      Print("WSAStartup failed.");
       return(INIT_FAILED);
    }
 
-   // 2. Create Socket
-   g_server_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-   if(g_server_socket == INVALID_SOCKET_VAL)
+   // 1. Setup Command Socket (Port 5555)
+   g_cmd_server_socket = CreateAndBindSocket(InpCommandPort);
+   if(g_cmd_server_socket == INVALID_SOCKET_VAL)
    {
-      Print("Failed to create socket.");
+      Print("Failed to bind Command Socket on port ", InpCommandPort);
       WSACleanup();
       return(INIT_FAILED);
    }
 
-   // 3. Make Non-blocking Socket
-   uint nonblock = 1;
-   ioctlsocket(g_server_socket, FIONBIO, nonblock);
-
-   // 4. Bind sockaddr_in structure (0.0.0.0:InpServerPort) 
-   // *** เปลี่ยนจาก 127.0.0.1 เป็น 0.0.0.0 เพื่อให้ Wine บน Mac ปลดล็อก Port ออกข้างนอก ***
-   uchar sockaddr[16];
-   ArrayInitialize(sockaddr, 0);
-   sockaddr[0] = AF_INET & 0xFF;
-   sockaddr[1] = (AF_INET >> 8) & 0xFF;
-   sockaddr[2] = (uchar)((InpServerPort >> 8) & 0xFF); // Port High
-   sockaddr[3] = (uchar)(InpServerPort & 0xFF);        // Port Low
-   sockaddr[4] = 0;                                    // 0.0.0.0 (INADDR_ANY)
-   sockaddr[5] = 0;
-   sockaddr[6] = 0;
-   sockaddr[7] = 0;
-
-   if(bind(g_server_socket, sockaddr, 16) != 0)
+   // 2. Setup Stream Socket (Port 5556)
+   g_stream_server_socket = CreateAndBindSocket(InpStreamPort);
+   if(g_stream_server_socket == INVALID_SOCKET_VAL)
    {
-      Print("Bind failed on port ", InpServerPort);
-      closesocket(g_server_socket);
+      Print("Failed to bind Stream Socket on port ", InpStreamPort);
+      closesocket(g_cmd_server_socket);
       WSACleanup();
       return(INIT_FAILED);
    }
 
-   // 5. Listen
-   if(listen(g_server_socket, 5) != 0)
-   {
-      Print("Listen failed.");
-      closesocket(g_server_socket);
-      WSACleanup();
-      return(INIT_FAILED);
-   }
-
-   PrintFormat("AlphaGo TCP Listener active on 0.0.0.0:%d", InpServerPort);
+   PrintFormat("AlphaGo EA Ready! Command Port: %d | Stream Port: %d", InpCommandPort, InpStreamPort);
    EventSetMillisecondTimer(10);
    return(INIT_SUCCEEDED);
 }
@@ -112,63 +115,104 @@ void OnDeinit(const int reason)
 {
    EventKillTimer();
    
-   if(g_client_socket != INVALID_SOCKET_VAL)
-   {
-      closesocket(g_client_socket);
-      g_client_socket = INVALID_SOCKET_VAL;
-   }
-   if(g_server_socket != INVALID_SOCKET_VAL)
-   {
-      closesocket(g_server_socket);
-      g_server_socket = INVALID_SOCKET_VAL;
-   }
+   if(g_cmd_client_socket != INVALID_SOCKET_VAL) closesocket(g_cmd_client_socket);
+   if(g_cmd_server_socket != INVALID_SOCKET_VAL) closesocket(g_cmd_server_socket);
+   
+   if(g_stream_client_socket != INVALID_SOCKET_VAL) closesocket(g_stream_client_socket);
+   if(g_stream_server_socket != INVALID_SOCKET_VAL) closesocket(g_stream_server_socket);
    
    WSACleanup();
-   Print("AlphaGo TCP Listener stopped.");
+   Print("AlphaGo EA stopped.");
 }
 
 //+------------------------------------------------------------------+
-//| Timer event function                                             |
+//| OnTick Event: Stream Real-time Price Data to Go Client           |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   // ถ้ามี Go Client เชื่อมต่อที่ Stream Socket (Port 5556) ให้ส่งข้อมูล Tick
+   if(g_stream_client_socket != INVALID_SOCKET_VAL)
+   {
+      MqlTick tick;
+      if(SymbolInfoTick(_Symbol, tick))
+      {
+         string json_tick = StringFormat(
+            "{\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f,\"volume\":%I64d,\"timestamp\":\"%s\"}\n",
+            _Symbol, tick.bid, tick.ask, (long)tick.volume, TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)
+         );
+
+         uchar data[];
+         StringToCharArray(json_tick, data, 0, WHOLE_ARRAY, CP_UTF8);
+         int size = ArraySize(data) - 1;
+         if(size > 0)
+         {
+            send(g_stream_client_socket, data, size, 0);
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Timer Event: Handle Incoming Socket Connections & Commands       |
 //+------------------------------------------------------------------+
 void OnTimer()
 {
-   // 1. Accept client if not connected
-   if(g_client_socket == INVALID_SOCKET_VAL)
+   uchar addr[16];
+   int addr_len = 16;
+
+   // 1. Accept Command Client (Port 5555)
+   if(g_cmd_client_socket == INVALID_SOCKET_VAL)
    {
-      uchar client_addr[16];
-      int addr_len = 16;
-      uint client_sock = accept(g_server_socket, client_addr, addr_len);
-      
-      if(client_sock != INVALID_SOCKET_VAL && client_sock != 0)
+      uint sock = accept(g_cmd_server_socket, addr, addr_len);
+      if(sock != INVALID_SOCKET_VAL && sock != 0)
       {
-         g_client_socket = client_sock;
+         g_cmd_client_socket = sock;
          uint nonblock = 1;
-         ioctlsocket(g_client_socket, FIONBIO, nonblock);
-         Print("Go Client connected to MT5 Listener!");
+         ioctlsocket(g_cmd_client_socket, FIONBIO, nonblock);
+         Print("Go Command Client connected (Port 5555)!");
       }
-      return;
    }
 
-   // 2. Read from client socket
-   int len = recv(g_client_socket, g_rx_buffer, (int)InpMaxBuffer, 0);
-   if(len > 0)
+   // 2. Accept Stream Client (Port 5556)
+   if(g_stream_client_socket == INVALID_SOCKET_VAL)
    {
-      string json_req = CharArrayToString(g_rx_buffer, 0, len, CP_UTF8);
-      StringTrimRight(json_req);
-      StringTrimLeft(json_req);
-
-      if(StringLen(json_req) > 0)
+      uint sock = accept(g_stream_server_socket, addr, addr_len);
+      if(sock != INVALID_SOCKET_VAL && sock != 0)
       {
-         Print("Received JSON: ", json_req);
-         string json_resp = ProcessTradeCommand(json_req);
-         SendResponse(json_resp);
+         g_stream_client_socket = sock;
+         uint nonblock = 1;
+         ioctlsocket(g_stream_client_socket, FIONBIO, nonblock);
+         Print("Go Stream Client connected (Port 5556)!");
       }
    }
-   else if(len == 0)
+
+   // 3. Read Command Data from Port 5555
+   if(g_cmd_client_socket != INVALID_SOCKET_VAL)
    {
-      Print("Go Client disconnected.");
-      closesocket(g_client_socket);
-      g_client_socket = INVALID_SOCKET_VAL;
+      int len = recv(g_cmd_client_socket, g_rx_buffer, (int)InpMaxBuffer, 0);
+      if(len > 0)
+      {
+         string json_req = CharArrayToString(g_rx_buffer, 0, len, CP_UTF8);
+         StringTrimRight(json_req);
+         StringTrimLeft(json_req);
+
+         if(StringLen(json_req) > 0)
+         {
+            Print("Received Command: ", json_req);
+            string json_resp = ProcessTradeCommand(json_req);
+            
+            uchar resp_data[];
+            StringToCharArray(json_resp, resp_data, 0, WHOLE_ARRAY, CP_UTF8);
+            int resp_size = ArraySize(resp_data) - 1;
+            if(resp_size > 0) send(g_cmd_client_socket, resp_data, resp_size, 0);
+         }
+      }
+      else if(len == 0)
+      {
+         Print("Go Command Client disconnected.");
+         closesocket(g_cmd_client_socket);
+         g_cmd_client_socket = INVALID_SOCKET_VAL;
+      }
    }
 }
 
@@ -182,49 +226,57 @@ string ProcessTradeCommand(string json)
    double volume = StringToDouble(ExtractJsonValue(json, "volume"));
    double sl     = StringToDouble(ExtractJsonValue(json, "sl"));
    double tp     = StringToDouble(ExtractJsonValue(json, "tp"));
+   ulong  ticket = (ulong)StringToInteger(ExtractJsonValue(json, "ticket"));
    
-   if(symbol == "" || volume <= 0.0)
+   if(action == "BUY" || action == "SELL")
    {
-      return CreateJsonResponse("FAILED", 0, "Invalid Symbol or Volume", 0.0);
+      if(symbol == "" || volume <= 0.0)
+         return CreateJsonResponse("FAILED", 0, "Invalid Symbol or Volume", 0.0);
+
+      SymbolSelect(symbol, true);
+      bool success = false;
+      double price = 0.0;
+
+      if(action == "BUY")
+      {
+         price = SymbolInfoDouble(symbol, SYMBOL_ASK);
+         success = g_trade.Buy(volume, symbol, price, sl, tp, "AlphaGo Go Engine");
+      }
+      else if(action == "SELL")
+      {
+         price = SymbolInfoDouble(symbol, SYMBOL_BID);
+         success = g_trade.Sell(volume, symbol, price, sl, tp, "AlphaGo Go Engine");
+      }
+
+      if(success)
+         return CreateJsonResponse("SUCCESS", g_trade.ResultOrder(), "Order executed successfully", g_trade.ResultPrice());
+      else
+         return CreateJsonResponse("FAILED", 0, StringFormat("Trade failed. RetCode: %d", g_trade.ResultRetcode()), 0.0);
+   }
+   else if(action == "CLOSE")
+   {
+      if(ticket == 0) return CreateJsonResponse("FAILED", 0, "Ticket ID required for CLOSE", 0.0);
+      
+      if(g_trade.PositionClose(ticket))
+         return CreateJsonResponse("SUCCESS", ticket, "Position closed successfully", g_trade.ResultPrice());
+      else
+         return CreateJsonResponse("FAILED", ticket, StringFormat("Close failed. RetCode: %d", g_trade.ResultRetcode()), 0.0);
+   }
+   else if(action == "MODIFY")
+   {
+      if(ticket == 0) return CreateJsonResponse("FAILED", 0, "Ticket ID required for MODIFY", 0.0);
+      
+      if(g_trade.PositionModify(ticket, sl, tp))
+         return CreateJsonResponse("SUCCESS", ticket, "Position modified successfully", 0.0);
+      else
+         return CreateJsonResponse("FAILED", ticket, StringFormat("Modify failed. RetCode: %d", g_trade.ResultRetcode()), 0.0);
    }
 
-   SymbolSelect(symbol, true);
-
-   bool success = false;
-   ulong ticket = 0;
-   double price = 0.0;
-
-   if(action == "BUY")
-   {
-      price = SymbolInfoDouble(symbol, SYMBOL_ASK);
-      success = g_trade.Buy(volume, symbol, price, sl, tp, "AlphaGo Go Engine");
-   }
-   else if(action == "SELL")
-   {
-      price = SymbolInfoDouble(symbol, SYMBOL_BID);
-      success = g_trade.Sell(volume, symbol, price, sl, tp, "AlphaGo Go Engine");
-   }
-   else
-   {
-      return CreateJsonResponse("FAILED", 0, "Unsupported Action: " + action, 0.0);
-   }
-
-   if(success)
-   {
-      ticket = g_trade.ResultOrder();
-      double exec_price = g_trade.ResultPrice();
-      return CreateJsonResponse("SUCCESS", ticket, "Order executed successfully", exec_price);
-   }
-   else
-   {
-      uint err_code = g_trade.ResultRetcode();
-      string err_msg = StringFormat("Trade failed. RetCode: %d", err_code);
-      return CreateJsonResponse("FAILED", 0, err_msg, 0.0);
-   }
+   return CreateJsonResponse("FAILED", 0, "Unsupported Action: " + action, 0.0);
 }
 
 //+------------------------------------------------------------------+
-//| Helper: Extract JSON Value                                       |
+//| Helpers                                                          |
 //+------------------------------------------------------------------+
 string ExtractJsonValue(string json, string key)
 {
@@ -241,9 +293,7 @@ string ExtractJsonValue(string json, string key)
    while(start < len && (StringGetCharacter(json, start) == ' ' || 
                          StringGetCharacter(json, start) == '\t' || 
                          StringGetCharacter(json, start) == '"'))
-   {
       start++;
-   }
 
    int end = start;
    while(end < len)
@@ -256,28 +306,8 @@ string ExtractJsonValue(string json, string key)
    return StringSubstr(json, start, end - start);
 }
 
-//+------------------------------------------------------------------+
-//| Helper: Create JSON Response                                     |
-//+------------------------------------------------------------------+
 string CreateJsonResponse(string status, ulong ticket, string message, double price)
 {
    return StringFormat("{\"status\":\"%s\",\"ticket\":%I64u,\"message\":\"%s\",\"executed_price\":%.5f}\n",
-                       status, ticket, message, price);
-}
-
-//+------------------------------------------------------------------+
-//| Helper: Send Response                                            |
-//+------------------------------------------------------------------+
-void SendResponse(string response)
-{
-   if(g_client_socket == INVALID_SOCKET_VAL) return;
-
-   uchar data[];
-   StringToCharArray(response, data, 0, WHOLE_ARRAY, CP_UTF8);
-   
-   int size = ArraySize(data) - 1;
-   if(size > 0)
-   {
-      send(g_client_socket, data, size, 0);
-   }
+                        status, ticket, message, price);
 }
