@@ -2,15 +2,14 @@ package ports
 
 import "github.com/nes224/alphago-mt5/internal/core/domain"
 
-type Strategy interface {
+type QuantStrategy interface {
 	ID() string
-	OnTick(tick domain.Tick) *domain.OrderSignal
+	OnTick(tick domain.Tick, metrics domain.TickMetrics) *domain.OrderSignal
 	OnCandle(candle domain.Candle) *domain.OrderSignal
 }
 
-type StategyEngine interface {
-	RegisterStrategy(s Strategy)
+type QuantEngine interface {
+	RegisterStrategy(s QuantStrategy)
 	PushTick(tick domain.Tick)
 	SignalChannel() <-chan domain.OrderSignal
 }
-

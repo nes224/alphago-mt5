@@ -27,16 +27,25 @@
 
 ## 🧠 Phase 2: The Brain (Go Quant Engine & Strategy)
 
-- [x ] **Real-time Market Data Stream**
+- [x] **Real-time Market Data Stream**
   - [x] เพิ่ม Socket Port (เช่น 5556) สำหรับ PUB/SUB หรือ Stream Price จาก MT5
-  - [ ] สร้าง In-memory Ring Buffer สำหรับเก็บ Time Series Price Data ใน Go
-- [ ] **Technical Analysis Indicators**
-  - [ ] เขียน Pure Go Indicator Functions (`SMA`, `EMA`, `RSI`, `MACD`, `ATR`)
-- [ ] **Risk & Position Sizing Engine**
-  - [ ] คำนวณ Dynamic Lot Size ตาม Account Equity และ Stop Loss
-  - [ ] ระบบ Max Daily Loss / Drawdown Guard
-- [ ] **Strategy Engine (Event Loop)**
-  - [ ] รับ Tick/Candle Data → คำนวณ Signal → สั่งยิง Order ผ่าน `MT5Port`
+  - [x] สร้าง PureQuantEngine ประมวลผล Tick สดในระดับ Sub-millisecond
+  - [x] สร้าง Sliding Window In-Memory Buffer สำหรับคำนวณ Z-Score สถิติ   
+- [x] Pure Quant & Microstructure Metrics (แทนที่ Indicators เก่า)
+  - [x] TickMetrics & ZScoreStrategy (คำนวณ Standard Deviation สวนเข้าหาค่าเฉลี่ย)
+  - [] Open Interest (OI) & Velocity Engine: เพิ่มฟิลด์ OpenInterest / OIDelta ใน tick.go และ tick_metrics.go เพื่อทำ OIExpansionStrategy
+  - [] Liquidity Sweep Detection: เขียนโมเดลตรวจจับการกวาด Stop Loss บริเวณ High/Low ย้อนหลัง
+  - [] Market Regime Filter: เพิ่ม Hurst Exponent หรือ Trend Slope แยกแยะช่วง Sideway ($Z$-Score) กับ Trend (OIExpansion)
+  - [] Microstructure S&R Window: สร้าง Rolling High/Low $N$-Ticks Buffe
+
+- [] Risk & Position Sizing Engine (สำคัญมากก่อนยิงจริง)
+  - [] Dynamic Position Sizing: คำนวณ Lot Size ตาม Risk % ของ Equity และระยะ Stop Loss จากค่า $\sigma$ (StdDev)
+  - [] Risk Guard / Drawdown Control: ล็อคระบบไม่ให้ยิง Order เพิ่มหาก Daily Loss ทะลุ Threshold ที่ตั้งไว้
+
+- [] Strategy Engine & Execution Wireup (Event Loop)
+  - [x] สร้าง QuantStrategy Interface และ SignalChannel()
+  - [] Signal Execution Dispatcher: ดึง OrderSignal จาก SignalChannel() ผ่าน Risk Guard แล้วส่งให้ tcp_client.go ยิง Order เข้า MT5 (alphago_mt5.mq)
+  - [] Main Wireup & Integration Tests: ประกอบระบบทั้งหมดใน cmd/app/main.go และเขียน quant_engine_test.go
 
 ---
 
