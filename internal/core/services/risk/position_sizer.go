@@ -12,14 +12,18 @@ type RiskManager struct {
 	accountBalance      float64
 	minLotSize          float64
 	maxLotSize          float64
+	minSLDistance       float64 // ระยะ SL/TP ต่ำสุด (หน่วยราคา เช่น 3.0 = $3 บน Gold) กัน SL/TP แคบเกินไปจน spread กินกำไรหมด
+	maxSLDistance       float64 // ระยะ SL/TP สูงสุด กันความเสี่ยงต่อไม้สูงเกินไปตอนตลาดผันผวนหนัก
 }
 
-func NewRiskManager(riskPerTradePercent, accountBalance, minLot, maxLot float64) *RiskManager {
+func NewRiskManager(riskPerTradePercent, accountBalance, minLot, maxLot, minSLDistance, maxSLDistance float64) *RiskManager {
 	return &RiskManager{
 		riskPerTradePercent: riskPerTradePercent,
 		accountBalance:      accountBalance,
 		minLotSize:          minLot,
 		maxLotSize:          maxLot,
+		minSLDistance:       minSLDistance,
+		maxSLDistance:       maxSLDistance,
 	}
 }
 
@@ -39,16 +43,18 @@ func (r *RiskManager) CalculateOrder(signal domain.OrderSignal, metrics domain.T
 	}
 
 	slDistance := 2.0 * metrics.StdDev
+	slDistance = math.Max(r.minSLDistance, math.Min(r.maxSLDistance, slDistance))
+
 	var entryPrice, stopLoss, takeProfit float64
 
 	if signal.Action == domain.SignalAction(domain.ActionBuy) {
 		entryPrice = metrics.Ask
 		stopLoss = entryPrice - slDistance
-		takeProfit = metrics.Mean
+		takeProfit = entryPrice + slDistance
 	} else {
 		entryPrice = metrics.Bid
 		stopLoss = entryPrice + slDistance
-		takeProfit = metrics.Mean
+		takeProfit = entryPrice - slDistance
 	}
 
 	riskAmount := r.accountBalance * r.riskPerTradePercent

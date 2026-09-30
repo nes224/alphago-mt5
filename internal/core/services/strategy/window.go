@@ -55,3 +55,30 @@ func (w *Window) StdDev() float64 {
 
 	return math.Sqrt(varianceSum / n)
 }
+
+// Slope returns the least-squares linear regression slope of the buffered
+// prices against their tick index (oldest=0 .. newest=n-1). It approximates
+// how strongly the market is trending: a slope near 0 means sideways/ranging,
+// a large |slope| means a directional trend.
+func (w *Window) Slope() float64 {
+	n := float64(len(w.data))
+	if n < 2 {
+		return 0
+	}
+
+	var sumX, sumY, sumXY, sumX2 float64
+	for i, v := range w.data {
+		x := float64(i)
+		sumX += x
+		sumY += v
+		sumXY += x * v
+		sumX2 += x * x
+	}
+
+	denominator := n*sumX2 - sumX*sumX
+	if denominator == 0 {
+		return 0
+	}
+
+	return (n*sumXY - sumX*sumY) / denominator
+}

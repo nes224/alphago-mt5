@@ -74,6 +74,13 @@ uint CreateAndBindSocket(ushort port)
 //+------------------------------------------------------------------+
 int OnInit()
 {
+   // รีเซ็ต client socket handle ให้สะอาดทุกครั้งที่ OnInit() รัน — กันเคสที่
+   // ตัวแปร global เก็บค่าเก่าจาก session ก่อนหน้าค้างอยู่ (ถ้าไม่รีเซ็ต
+   // เงื่อนไข accept() ใน OnTimer() จะไม่มีวันเป็นจริงเลย เพราะคิดว่ามี
+   // client เก่าเชื่อมต่ออยู่แล้วทั้งที่จริงๆ ไม่มี)
+   g_cmd_client_socket    = INVALID_SOCKET_VAL;
+   g_stream_client_socket = INVALID_SOCKET_VAL;
+
    ArrayResize(g_rx_buffer, (int)InpMaxBuffer);
    g_trade.SetTypeFilling(ORDER_FILLING_IOC);
 
@@ -137,7 +144,7 @@ void OnTick()
       if(SymbolInfoTick(_Symbol, tick))
       {
          string json_tick = StringFormat(
-            "{\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f,\"volume\":%I64d,\"timestamp\":\"%s\"}\n",
+            "{\"type\":\"tick\",\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f,\"volume\":%I64d,\"timestamp\":\"%s\"}\n",
             _Symbol, tick.bid, tick.ask, (long)tick.volume, TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)
          );
 
@@ -149,6 +156,52 @@ void OnTick()
             send(g_stream_client_socket, data, size, 0);
          }
       }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| OnTradeTransaction: จับตอน Position ปิด (SL/TP/ปิดมือ) ส่งผล    |
+//| Win/Loss จริงกลับไปให้ Go ผ่าน Stream Socket                    |
+//+------------------------------------------------------------------+
+void OnTradeTransaction(const MqlTradeTransaction &trans,
+                         const MqlTradeRequest &request,
+                         const MqlTradeResult &result)
+{
+   // สนใจแค่ตอนมี "deal" ใหม่เกิดขึ้น (การจับคู่ order กับราคาจริงในตลาด)
+   if(trans.type != TRADE_TRANSACTION_DEAL_ADD)
+      return;
+
+   ulong deal_ticket = trans.deal;
+   if(!HistoryDealSelect(deal_ticket))
+      return;
+
+   // DEAL_ENTRY_OUT = deal ที่ "ปิด" position (ไม่ใช่ deal ที่เปิด position ใหม่)
+   long entry = HistoryDealGetInteger(deal_ticket, DEAL_ENTRY);
+   if(entry != DEAL_ENTRY_OUT)
+      return;
+
+   string symbol = HistoryDealGetString(deal_ticket, DEAL_SYMBOL);
+   double profit = HistoryDealGetDouble(deal_ticket, DEAL_PROFIT)
+                  + HistoryDealGetDouble(deal_ticket, DEAL_SWAP)
+                  + HistoryDealGetDouble(deal_ticket, DEAL_COMMISSION);
+   ulong position_id = HistoryDealGetInteger(deal_ticket, DEAL_POSITION_ID);
+
+   if(g_stream_client_socket != INVALID_SOCKET_VAL)
+   {
+      string json_event = StringFormat(
+         "{\"type\":\"trade_closed\",\"symbol\":\"%s\",\"ticket\":%I64u,\"profit\":%.2f,\"timestamp\":\"%s\"}\n",
+         symbol, position_id, profit, TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)
+      );
+
+      uchar data[];
+      StringToCharArray(json_event, data, 0, WHOLE_ARRAY, CP_UTF8);
+      int size = ArraySize(data) - 1;
+      if(size > 0)
+      {
+         send(g_stream_client_socket, data, size, 0);
+      }
+
+      PrintFormat("Trade Closed Event Sent: %s Ticket=%I64u Profit=%.2f", symbol, position_id, profit);
    }
 }
 
@@ -184,6 +237,22 @@ void OnTimer()
          ioctlsocket(g_stream_client_socket, FIONBIO, nonblock);
          Print("Go Stream Client connected (Port 5556)!");
       }
+   }
+
+   // 2.5 ตรวจจับ Dead Stream Client — Stream เป็น one-way (EA->Go) เลยไม่มีใคร
+   //     เช็ค recv() มาก่อน ทำให้ตอน Go ฝั่งนั้นหลุดไป g_stream_client_socket
+   //     ไม่เคยถูกเคลียร์ ค้างเป็น client เก่าตลอดกาล ไม่ accept() connection ใหม่อีกเลย
+   if(g_stream_client_socket != INVALID_SOCKET_VAL)
+   {
+      uchar peek_buf[16];
+      int len = recv(g_stream_client_socket, peek_buf, 16, 0);
+      if(len == 0)
+      {
+         Print("Go Stream Client disconnected.");
+         closesocket(g_stream_client_socket);
+         g_stream_client_socket = INVALID_SOCKET_VAL;
+      }
+      // len < 0 บน non-blocking socket ปกติคือ WSAEWOULDBLOCK (ไม่มีข้อมูลเข้ามา) — ไม่ใช่ error
    }
 
    // 3. Read Command Data from Port 5555
