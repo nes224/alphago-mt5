@@ -296,8 +296,13 @@ func TestQuantEngine_PipelineIntegration(t *testing.T) {
 	quantEngine.RegisterStrategy(oiStrategy)
 
 	riskManager := risk.NewRiskManager(0.01, 10000.0, 0.01, 1.00)
+	riskGuard := risk.NewRiskGuard(risk.RiskGuardConfig{
+		MaxDailyLossPercent: 0.03,
+		MaxOpenPositions:    5,
+		MaxSpreadPips:       5.0,
+	}, 10000.0)
 	orderSink := make(chan risk.PreparedOrder, bufferCapicity)
-	execRouter := pipeline.NewExecutionRouter(quantEngine, riskManager, orderSink, 1)
+	execRouter := pipeline.NewExecutionRouter(quantEngine, riskManager, riskGuard, orderSink, 1)
 
 	quantEngine.Start(ctx)
 	execRouter.Start(ctx)
@@ -356,5 +361,31 @@ func TestQuantEngine_PipelineIntegration(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Timeout waiting for PreparedOrder in orderSink channel.")
+	}
+}
+
+func TestQuantEngine_ProcessTick(t *testing.T) {
+	eng := strategy.NewQuantEngine(5, 100) // windowSize = 5
+
+	ticks := []domain.Tick{
+		{Symbol: "EURUSD", Ask: 1.1002, Bid: 1.1000, Timestamp: time.Now()}, // Mid = 1.1001
+		{Symbol: "EURUSD", Ask: 1.1004, Bid: 1.1002, Timestamp: time.Now()}, // Mid = 1.1003
+		{Symbol: "EURUSD", Ask: 1.1006, Bid: 1.1004, Timestamp: time.Now()}, // Mid = 1.1005
+	}
+
+	for _, tick := range ticks {
+		eng.ProcessTick(tick)
+	}
+
+	metrics := eng.GetLatestMetrics("EURUSD")
+
+	if metrics.Symbol != "EURUSD" {
+		t.Errorf("Expected symbol EURUSD, got %s", metrics.Symbol)
+	}
+	if metrics.Price != 1.1005 {
+		t.Errorf("Expected Price 1.1005, got %f", metrics.Price)
+	}
+	if metrics.Mean == 0 {
+		t.Errorf("Expected non-zero Mean")
 	}
 }

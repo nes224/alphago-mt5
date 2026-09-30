@@ -38,9 +38,9 @@
   - [ ] Market Regime Filter: เพิ่ม Hurst Exponent หรือ Trend Slope แยกแยะช่วง Sideway ($Z$-Score) กับ Trend (OIExpansion)
   - [x] Microstructure S&R Window: สร้าง Rolling High/Low N-Ticks Buffer (`LiquiditySweepDetector.HighLow()`)
 
-- [ ] Risk & Position Sizing Engine (สำคัญมากก่อนยิงจริง)
+- [x] Risk & Position Sizing Engine (สำคัญมากก่อนยิงจริง)
   - [x] Dynamic Position Sizing: คำนวณ Lot Size ตาม Risk % ของ Equity และระยะ Stop Loss จากค่า $\sigma$ (StdDev)
-  - [ ] Risk Guard / Drawdown Control: ล็อคระบบไม่ให้ยิง Order เพิ่มหาก Daily Loss ทะลุ Threshold ที่ตั้งไว้ (เขียน `risk_guard.go` + unit test ผ่านครบแล้ว แต่ **`ExecutionRouter.Start()` ยังไม่เรียกใช้ — bypass RiskGuard อยู่**, ดู `execution_router.go:73` กับ `main.go:66`)
+  - [x] Risk Guard / Drawdown Control: ล็อคระบบไม่ให้ยิง Order เพิ่มหาก Daily Loss ทะลุ Threshold ที่ตั้งไว้ (ต่อเข้า `ExecutionRouter.Start()` แล้ว — เช็ค `riskGuard.ValidateOrder()` หลังคำนวณ lot size ก่อนส่งเข้า `orderSink`)
 
 - [x] Strategy Engine & Execution Wireup (Event Loop)
   - [x] สร้าง QuantStrategy Interface และ SignalChannel()

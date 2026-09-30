@@ -4,7 +4,6 @@ import (
 	"context"
 	"log"
 
-	"github.com/nes224/alphago-mt5/internal/core/domain"
 	"github.com/nes224/alphago-mt5/internal/core/ports"
 	"github.com/nes224/alphago-mt5/internal/core/services/risk"
 )
@@ -17,10 +16,16 @@ type ExecutionRouter struct {
 	workerCount int
 }
 
-func NewExecutionRouter(engine ports.QuantEngine, riskMgr *risk.RiskManager, orderSink chan<- risk.PreparedOrder, workers int) *ExecutionRouter {
+func NewExecutionRouter(
+	engine ports.QuantEngine,
+	riskMgr *risk.RiskManager,
+	riskGuard *risk.RiskGuard,
+	orderSink chan<- risk.PreparedOrder,
+	workers int) *ExecutionRouter {
 	return &ExecutionRouter{
 		engine:      engine,
 		riskMgr:     riskMgr,
+		riskGuard:   riskGuard,
 		orderSink:   orderSink,
 		workerCount: workers,
 	}
@@ -43,7 +48,14 @@ func (r *ExecutionRouter) Start(ctx context.Context) {
 					preparedOrder, err := r.riskMgr.CalculateOrder(signal, metrics)
 					if err != nil {
 						log.Printf("[Worker %d] Risk calculation rejected signal: %v", workerID, err)
-						return
+						continue
+					}
+
+					if r.riskGuard != nil {
+						if err := r.riskGuard.ValidateOrder(*preparedOrder, metrics); err != nil {
+							log.Printf("[Worker %d] RISK GUARD BLOCKED signal for %s: %v", workerID, signal.Symbol, err)
+							continue
+						}
 					}
 
 					select {
@@ -56,31 +68,5 @@ func (r *ExecutionRouter) Start(ctx context.Context) {
 				}
 			}
 		}(i)
-	}
-}
-
-func (r *ExecutionRouter) processSignal(signal domain.OrderSignal) {
-	metrics := r.engine.GetLatestMetrics(signal.Symbol)
-
-	// 1. คำนวณ Sizing / SL / TP
-	preparedOrder, err := r.riskMgr.CalculateOrder(signal, metrics)
-	if err != nil {
-		log.Printf("[Router] Sizing calculation rejected: %v", err)
-		return
-	}
-
-	// 2. ✅ ผ่าน RiskGuard เช็กความปลอดภัยเป็นด่านสุดท้าย
-	if err := r.riskGuard.ValidateOrder(*preparedOrder, metrics); err != nil {
-		log.Printf("[RiskGuard REJECTED] Symbol: %s | Reason: %v", preparedOrder.Symbol, err)
-		return
-	}
-
-	// 3. Dispatch ยิงต่อไปยัง MT5 TCP Adapter
-	select {
-	case r.orderSink <- *preparedOrder:
-		log.Printf("[ORDER DISPATCHED] %s %s | Lot: %.2f | SL: %.2f | TP: %.2f",
-			preparedOrder.Action, preparedOrder.Symbol, preparedOrder.LotSize, preparedOrder.StopLoss, preparedOrder.TakeProfit)
-	default:
-		log.Printf("[WARNING] Order Sink Channel full, dropped order for %s", preparedOrder.Symbol)
 	}
 }

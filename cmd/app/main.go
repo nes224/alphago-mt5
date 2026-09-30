@@ -27,6 +27,11 @@ const (
 	WindowSize       = 20
 	WorkerCount      = 4
 	InitialAccountEq = 10000.0
+
+	MaxDailyLossPercent  = 0.03
+	MaxOpenPositions     = 5
+	MaxSpreadPips        = 5.0
+	MaxConsecutiveLosses = 5
 )
 
 func main() {
@@ -60,11 +65,16 @@ func main() {
 	log.Printf("✅ Registered Strategy: %s", oiStrategy.ID())
 
 	// 5. Initialize Risk Management & Execution Pipeline
+	riskGuard := risk.NewRiskGuard(risk.RiskGuardConfig{
+		MaxDailyLossPercent:  MaxDailyLossPercent,
+		MaxOpenPositions:     MaxOpenPositions,
+		MaxSpreadPips:        MaxSpreadPips,
+		MaxConsecutiveLosses: MaxConsecutiveLosses,
+	}, InitialAccountEq)
 	riskManager := risk.NewRiskManager(0.01, InitialAccountEq, 0.01, 1.00)
 
 	orderSink := make(chan risk.PreparedOrder, BufferCapacity)
-	// [FIX 1] ลบ riskGuard ออกจาก NewExecutionRouter ตามที่ Signature ต้องการ
-	execRouter := pipeline.NewExecutionRouter(quantEngine, riskManager, orderSink, WorkerCount)
+	execRouter := pipeline.NewExecutionRouter(quantEngine, riskManager, riskGuard, orderSink, WorkerCount)
 
 	// 6. Start Engine & Router Background Workers
 	quantEngine.Start(ctx)
