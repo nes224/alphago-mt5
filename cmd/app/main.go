@@ -50,9 +50,11 @@ const (
 	// สร้าง candle aggregator จริง ยังเป็นค่าประมาณ ต้องดู tick rate จริงก่อนปรับ
 	LongTermWindowSize = 2000
 	// MinLongTermTrendSlope เป็น threshold ตัดสินว่า slope ของ window ยาวถือว่า
-	// "มีทิศทาง" พอจะใช้กรองหรือยัง — window ยาวกว่าทำให้ slope เฉลี่ยเล็กกว่า
-	// window สั้นโดยธรรมชาติ ค่านี้ยังไม่ได้ tune จากข้อมูลจริงเลย
-	MinLongTermTrendSlope = 0.05
+	// "มีทิศทาง" พอจะใช้กรองหรือยัง — ปิดไว้ก่อน (0 = ปิด) เพราะค่าจริงที่วัดได้
+	// จาก /api/v1/status (~0.0009) เล็กกว่าค่าเดิมที่เดาไว้ (0.05) เกือบ 60 เท่า
+	// ทำให้ gate บล็อกทุก signal ไม่มีวันผ่านเลย — ต้องเก็บข้อมูล slope จริงช่วง
+	// ที่ตลาด trend ชัดๆ ก่อน ถึงจะตั้ง threshold ที่ใช้งานได้จริง
+	MinLongTermTrendSlope = 0
 
 	// SignalCooldown กันไม่ให้ QuantEngine ยิง signal ถี่เกินไปต่อ symbol
 	// ไม่ว่า threshold ของ strategy ตัวไหนจะยังไม่ได้ tune ดีแค่ไหนก็ตาม —
