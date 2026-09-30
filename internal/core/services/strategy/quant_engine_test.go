@@ -292,10 +292,10 @@ func TestQuantEngine_PipelineIntegration(t *testing.T) {
 	quantEngine := strategy.NewQuantEngine(bufferCapicity, windowSize)
 
 	symbol := "XAUUSDm"
-	oiStrategy := strategy.NewOIExpansionStrategy(symbol, 1.5, 5.0, 0.1)
-	quantEngine.RegisterStrategy(oiStrategy)
+	volumeStrategy := strategy.NewVolumeExpansionStrategy(symbol, 1.5, 5.0, 0.1)
+	quantEngine.RegisterStrategy(volumeStrategy)
 
-	riskManager := risk.NewRiskManager(0.01, 10000.0, 0.01, 1.00)
+	riskManager := risk.NewRiskManager(0.01, 10000.0, 0.01, 1.00, 0.01, 100.0)
 	riskGuard := risk.NewRiskGuard(risk.RiskGuardConfig{
 		MaxDailyLossPercent: 0.03,
 		MaxOpenPositions:    5,
@@ -314,12 +314,11 @@ func TestQuantEngine_PipelineIntegration(t *testing.T) {
 	// 1. Push Warm-up Ticks เพื่อสร้าง Variance ให้กับ Rolling Window
 	for i, offset := range priceOffsets {
 		tck := domain.Tick{
-			Symbol:       symbol,
-			Ask:          basePrice + offset,
-			Bid:          (basePrice + offset) - 0.20,
-			Volume:       10 + int64(i),
-			OpenInterest: 1000, // ค่า OI นิ่งๆ ไว้ก่อน ไม่ให้ยิง Signal ในช่วง Warm-up
-			Timestamp:    time.Now().Add(time.Duration(i) * time.Millisecond),
+			Symbol:    symbol,
+			Ask:       basePrice + offset,
+			Bid:       (basePrice + offset) - 0.20,
+			Volume:    10, // Volume นิ่งๆ ไว้ก่อน ไม่ให้ยิง Signal ในช่วง Warm-up
+			Timestamp: time.Now().Add(time.Duration(i) * time.Millisecond),
 		}
 		quantEngine.PushTick(tck)
 		time.Sleep(5 * time.Millisecond) // ให้เวลากับ Worker Routine ในการกิน channel
@@ -343,12 +342,11 @@ func TestQuantEngine_PipelineIntegration(t *testing.T) {
 
 	// 3. Push Spike Tick เพื่อ Trigger Signal เมื่อ Window และ Metrics พร้อมแล้ว
 	spikeTick := domain.Tick{
-		Symbol:       symbol,
-		Ask:          2615.00,
-		Bid:          2614.80,
-		Volume:       100,
-		OpenInterest: 1200, // เกิด OI Expansion Trigger!
-		Timestamp:    time.Now().Add(200 * time.Millisecond),
+		Symbol:    symbol,
+		Ask:       2615.00,
+		Bid:       2614.80,
+		Volume:    100, // Volume พุ่งจาก 10 -> 100 เกิด Volume Expansion Trigger!
+		Timestamp: time.Now().Add(200 * time.Millisecond),
 	}
 	quantEngine.PushTick(spikeTick)
 
@@ -387,5 +385,79 @@ func TestQuantEngine_ProcessTick(t *testing.T) {
 	}
 	if metrics.Mean == 0 {
 		t.Errorf("Expected non-zero Mean")
+	}
+}
+
+func TestQuantEngine_SignalCooldown_SuppressesRapidSignals(t *testing.T) {
+	engine := strategy.NewQuantEngine(100, 5)
+	engine.SetSignalCooldown(200 * time.Millisecond)
+
+	// targetZ=0 means this mock fires on essentially every tick once StdDev > 0,
+	// simulating an under-tuned strategy that would otherwise spam signals.
+	engine.RegisterStrategy(NewMockStrategy("SPAMMY_STRAT", 0.0))
+
+	now := time.Now()
+	for i := 0; i < 10; i++ {
+		engine.ProcessTick(domain.Tick{
+			Symbol:    "XAUUSDm",
+			Bid:       2600.0 + float64(i),
+			Ask:       2600.2 + float64(i),
+			Timestamp: now.Add(time.Duration(i) * time.Millisecond),
+		})
+	}
+
+	signalCount := 0
+	drain := true
+	for drain {
+		select {
+		case <-engine.SignalChannel():
+			signalCount++
+		default:
+			drain = false
+		}
+	}
+
+	if signalCount != 1 {
+		t.Fatalf("Expected exactly 1 signal within the cooldown window, got %d", signalCount)
+	}
+
+	// After the cooldown elapses, a new signal for the same symbol should pass through again.
+	time.Sleep(250 * time.Millisecond)
+	engine.ProcessTick(domain.Tick{
+		Symbol:    "XAUUSDm",
+		Bid:       2650.0,
+		Ask:       2650.2,
+		Timestamp: now.Add(300 * time.Millisecond),
+	})
+
+	select {
+	case <-engine.SignalChannel():
+	default:
+		t.Fatal("Expected a signal to pass through after the cooldown window elapsed")
+	}
+}
+
+func TestQuantEngine_SignalCooldown_IndependentPerSymbol(t *testing.T) {
+	engine := strategy.NewQuantEngine(100, 5)
+	engine.SetSignalCooldown(1 * time.Hour) // effectively "only one ever" within this test
+	engine.RegisterStrategy(NewMockStrategy("SPAMMY_STRAT", 0.0))
+
+	now := time.Now()
+	engine.ProcessTick(domain.Tick{Symbol: "XAUUSDm", Bid: 2600.0, Ask: 2600.2, Timestamp: now})
+	engine.ProcessTick(domain.Tick{Symbol: "EURUSD", Bid: 1.1000, Ask: 1.1002, Timestamp: now})
+
+	signalCount := 0
+	drain := true
+	for drain {
+		select {
+		case <-engine.SignalChannel():
+			signalCount++
+		default:
+			drain = false
+		}
+	}
+
+	if signalCount != 2 {
+		t.Fatalf("Expected 1 signal per distinct symbol (2 total), got %d", signalCount)
 	}
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/nes224/alphago-mt5/internal/core/domain"
 	"github.com/nes224/alphago-mt5/internal/core/services"
+	"github.com/nes224/alphago-mt5/internal/core/services/risk"
 )
 
 type MockMT5Adapter struct {
@@ -34,7 +35,7 @@ func (m *MockMT5Adapter) Close() error {
 
 func TestTradeService_ExecuteTrade_Validation(t *testing.T) {
 	mockAdapter := &MockMT5Adapter{}
-	service := services.NewTradeService(mockAdapter)
+	service := services.NewTradeService(mockAdapter, nil)
 	ctx := context.Background()
 
 	tests := []struct {
@@ -81,7 +82,7 @@ func TestTradeService_ExecuteTrade_Validation(t *testing.T) {
 
 func TestTradeService_ExecuteTrade_RiskGuard(t *testing.T) {
 	mockAdapter := &MockMT5Adapter{}
-	service := services.NewTradeService(mockAdapter)
+	service := services.NewTradeService(mockAdapter, nil)
 
 	req := domain.TradeRequest{
 		Action: "BUY", Symbol: "EURUSD", Volume: 15.0,
@@ -94,6 +95,37 @@ func TestTradeService_ExecuteTrade_RiskGuard(t *testing.T) {
 
 	if !errors.Is(err, services.ErrRiskGuardTriggered) && !strings.Contains(err.Error(), "risk") {
 		t.Errorf("expected risk guard error, got: %v", err)
+	}
+}
+
+func TestTradeService_ExecuteTrade_BlockedByRiskGuardCircuitBreaker(t *testing.T) {
+	mockAdapter := &MockMT5Adapter{}
+	guard := risk.NewRiskGuard(risk.RiskGuardConfig{MaxDailyLossPercent: 0.03}, 10000.0)
+	guard.UpdateAccountEquity(9000.0) // -10% > 3% threshold -> trips the circuit breaker
+
+	service := services.NewTradeService(mockAdapter, guard)
+
+	req := domain.TradeRequest{Action: "BUY", Symbol: "XAUUSDm", Volume: 0.1}
+	_, err := service.ExecuteTrade(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected order to be blocked while RiskGuard circuit breaker is tripped, got nil error")
+	}
+	if !errors.Is(err, risk.ErrDailyDrawdownExceeded) {
+		t.Errorf("expected ErrDailyDrawdownExceeded, got: %v", err)
+	}
+}
+
+func TestTradeService_ExecuteTrade_CloseAllowedDespiteCircuitBreaker(t *testing.T) {
+	mockAdapter := &MockMT5Adapter{}
+	guard := risk.NewRiskGuard(risk.RiskGuardConfig{MaxDailyLossPercent: 0.03}, 10000.0)
+	guard.UpdateAccountEquity(9000.0) // circuit breaker tripped
+
+	service := services.NewTradeService(mockAdapter, guard)
+
+	req := domain.TradeRequest{Action: domain.ActionClose, Ticket: 12345}
+	_, err := service.ExecuteTrade(context.Background(), req)
+	if err != nil {
+		t.Fatalf("expected CLOSE to be allowed even while circuit breaker is tripped, got error: %v", err)
 	}
 }
 
@@ -110,7 +142,7 @@ func TestTradeService_ExecuteTrade_Success(t *testing.T) {
 		},
 	}
 
-	service := services.NewTradeService(mockAdapter)
+	service := services.NewTradeService(mockAdapter, nil)
 	ctx := context.Background()
 
 	req := domain.TradeRequest{

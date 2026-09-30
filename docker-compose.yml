@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: alphago
+      POSTGRES_PASSWORD: alphago
+      POSTGRES_DB: alphago
+    ports:
+      - "5434:5432"
+    volumes:
+      - alphago_postgres_data:/var/lib/postgresql/data
+
+volumes:
+  alphago_postgres_data:

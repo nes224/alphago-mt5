@@ -26,16 +26,15 @@
 ---
 
 ## 🧠 Phase 2: The Brain (Go Quant Engine & Strategy)
-
 - [x] **Real-time Market Data Stream**
   - [x] เพิ่ม Socket Port (เช่น 5556) สำหรับ PUB/SUB หรือ Stream Price จาก MT5
   - [x] สร้าง PureQuantEngine ประมวลผล Tick สดในระดับ Sub-millisecond
   - [x] สร้าง Sliding Window In-Memory Buffer สำหรับคำนวณ Z-Score สถิติ   
 - [x] Pure Quant & Microstructure Metrics (แทนที่ Indicators เก่า)
-  - [x] TickMetrics & ZScoreStrategy (คำนวณ Standard Deviation สวนเข้าหาค่าเฉลี่ย)
-  - [x] Open Interest (OI) & Velocity Engine: เพิ่มฟิลด์ OpenInterest / OIDelta ใน tick.go และ tick_metrics.go เพื่อทำ OIExpansionStrategy
-  - [x] Liquidity Sweep Detection: เขียนโมเดลตรวจจับการกวาด Stop Loss บริเวณ High/Low ย้อนหลัง (`liquidity_sweep_detector.go` + test ผ่าน — **ยังไม่ได้ผูกเป็น Strategy เข้า QuantEngine**)
-  - [ ] Market Regime Filter: เพิ่ม Hurst Exponent หรือ Trend Slope แยกแยะช่วง Sideway ($Z$-Score) กับ Trend (OIExpansion)
+  - [x] TickMetrics & ZScoreStrategy (คำนวณ Standard Deviation สวนเข้าหาค่าเฉลี่ย) — **ลบ `zscore_strategy.go` ทิ้งแล้ว** (โค้ดพัง ไม่ implement `ports.QuantStrategy` มาตั้งแต่ต้น ไม่เคยถูกใช้งานจริง — concept มัน cover อยู่แล้วใน `VolumeExpansionStrategy`/`LiquiditySweepStrategy`)
+  - [x] Open Interest (OI) & Velocity Engine: เพิ่มฟิลด์ OpenInterest / OIDelta ใน tick.go และ tick_metrics.go — **เปลี่ยนเป็น `VolumeExpansionStrategy` แทน `OIExpansionStrategy` แล้ว** เพราะ Exness/โบรกเกอร์ CFD ไม่ส่ง Open Interest จริงมาให้ (`OIDelta` จะเป็น 0 เสมอ) ใช้ `VolumeDelta`/`VolumeVelocity` จาก tick volume จริงแทน — `minVolumeVelocity` ยังเป็นค่าประมาณ ต้อง tune จากข้อมูลจริง
+  - [x] Liquidity Sweep Detection: เขียนโมเดลตรวจจับการกวาด Stop Loss บริเวณ High/Low ย้อนหลัง (`liquidity_sweep_detector.go` + ผูกเป็น `LiquiditySweepStrategy` เข้า QuantEngine แล้ว — fade แบบ Reversal/Stop-Hunt, register อยู่ใน `main.go`)
+  - [x] Market Regime Filter: เพิ่ม Trend Slope (least-squares regression บน `Window` เดิม) แยกแยะ Sideway/Trend แล้วปิดสวิตช์ `LiquiditySweepStrategy` เวลา Trend (`window.go:Slope()`, `TickMetrics.TrendSlope`) — **ยังไม่ได้ผ่าน backtest จริง threshold เป็นค่าประมาณ** ยังไม่ได้ทำ Hurst Exponent (เก็บไว้อัปเกรดทีหลังถ้า slope ไม่พอ)
   - [x] Microstructure S&R Window: สร้าง Rolling High/Low N-Ticks Buffer (`LiquiditySweepDetector.HighLow()`)
 
 - [x] Risk & Position Sizing Engine (สำคัญมากก่อนยิงจริง)
@@ -49,7 +48,9 @@
 
 ---
 
-## 🟣 Phase 3: The Intelligence (Claude AI Integration)
+## 🟣 Phase 3: The Intelligence (Claude AI Integration) — ⏸️ PAUSED
+
+> หยุดไว้ก่อนตามคำสั่ง (2026-09-30) — โฟกัส Phase 2 (tune threshold จากข้อมูลจริง) และ Phase 4 (hardening) ก่อน ค่อยกลับมาเปิดทีหลัง
 
 - [ ] **Claude AI Secondary Adapter**
   - [ ] สร้าง `internal/adapters/claude/` เชื่อมต่อ Anthropic Claude API
@@ -65,7 +66,9 @@
 ## 🧪 Phase 4: Testing & Hardening
 
 - [ ] **Unit & Integration Testing**
-  - [ ] เขียน Unit Test สำหรับ `TradeService` โดยใช้ Mock `MT5Port` (ไม่ต้องต่อ MT5 จริง)
-  - [ ] ทำ Integration Test บน บัญชี Demo ของ MT5
-- [ ] **Logging & Monitoring**
-  - [ ] ติดตั้ง Structured Logger (เช่น `zerolog` หรือ `zap`) บันทึก Log ทุกการส่งคำสั่งเทรด
+  - [x] เขียน Unit Test สำหรับ `TradeService` โดยใช้ Mock `MT5Port` (ไม่ต้องต่อ MT5 จริง) — `trade_service_test.go` มี `MockMT5Adapter` ครบ 5 เคส
+  - [x] ทำ Integration Test บน บัญชี Demo ของ MT5 — ทดสอบยิงจริงผ่าน Exness Demo แล้ว (manual, ไม่ใช่ automated test)
+- [x] **Logging & Monitoring**
+  - [x] ติดตั้ง Structured Logger (`zerolog`) แทน `log.Printf` ทั้งระบบ — `internal/adapters/logging/logging.go` (console pretty-print ตอน dev, JSON ตอน `APP_ENV=production`)
+- [x] **Persistence Layer (PostgreSQL + GORM)**: `internal/adapters/database/` — เก็บ Account Balance, RiskGuard state (daily equity/circuit breaker/consecutive losses), และ Signal/Trade history ให้รอดจาก restart แทน in-memory ล้วนๆ (`risk.StateStore`, `pipeline.SignalStore` ports + `docker-compose.yml` สำหรับรัน Postgres local)
+- [x] **Trade Outcome Tracking (Win/Loss)**: EA ส่ง `trade_closed` event ผ่าน `OnTradeTransaction()` บน stream socket เดียวกับ tick (แยกด้วย field `"type"`) → `StreamAdapter.SubscribeTradeEvents()` → `RiskGuard.RecordTradeResult()` + อัปเดต `account_state.balance` ใน DB ตาม P/L จริง — **`ACCOUNT_BALANCE` ตอนนี้ dynamic เต็มรูปแบบแล้ว** ขยับตามผลเทรดจริงอัตโนมัติ ไม่ต้องแก้มืออีก (ยังต้องแก้ EA ฝั่ง MQL5 เพิ่มก่อนถึงจะใช้งานได้จริง — ดูโค้ดที่แนบให้)

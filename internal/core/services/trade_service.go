@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+
+	"github.com/rs/zerolog/log"
 
 	"github.com/nes224/alphago-mt5/internal/core/domain"
 	"github.com/nes224/alphago-mt5/internal/core/ports"
+	"github.com/nes224/alphago-mt5/internal/core/services/risk"
 )
 
 var (
@@ -21,11 +23,12 @@ var (
 const MaxAllowedVolume = 10.0
 
 type TradeService struct {
-	mt5Port ports.MT5Port
+	mt5Port   ports.MT5Port
+	riskGuard *risk.RiskGuard // optional (nil disables the check); shared with the automated ExecutionRouter pipeline
 }
 
-func NewTradeService(mt5Port ports.MT5Port) *TradeService {
-	return &TradeService{mt5Port: mt5Port}
+func NewTradeService(mt5Port ports.MT5Port, riskGuard *risk.RiskGuard) *TradeService {
+	return &TradeService{mt5Port: mt5Port, riskGuard: riskGuard}
 }
 
 func (s *TradeService) ExecuteTrade(ctx context.Context, req domain.TradeRequest) (*domain.TradeResponse, error) {
@@ -34,26 +37,43 @@ func (s *TradeService) ExecuteTrade(ctx context.Context, req domain.TradeRequest
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	if (req.Action == domain.ActionBuy || req.Action == domain.ActionSell) && req.Volume > MaxAllowedVolume {
-		return nil, fmt.Errorf("risk check failed: %w", ErrRiskGuardTriggered)
+	// Only new entries (BUY/SELL) are subject to risk limits — CLOSE/MODIFY
+	// must always be allowed through so a user can still cut risk manually
+	// while the circuit breaker is tripped.
+	if req.Action == domain.ActionBuy || req.Action == domain.ActionSell {
+		if req.Volume > MaxAllowedVolume {
+			return nil, fmt.Errorf("risk check failed: %w", ErrRiskGuardTriggered)
+		}
+
+		if s.riskGuard != nil {
+			if err := s.riskGuard.CheckCircuitBreaker(); err != nil {
+				return nil, fmt.Errorf("blocked by risk guard: %w", err)
+			}
+		}
 	}
 
-	log.Printf("[TradeService] Executing order: Action=%s, Symbol=%s, Ticket=%d, Volume=%.2f, SL=%.5f, TP=%.5f",
-		req.Action, req.Symbol, req.Ticket, req.Volume, req.SL, req.TP)
+	log.Info().
+		Str("action", string(req.Action)).
+		Str("symbol", req.Symbol).
+		Uint64("ticket", req.Ticket).
+		Float64("volume", req.Volume).
+		Float64("sl", req.SL).
+		Float64("tp", req.TP).
+		Msg("[TradeService] Executing order")
 
 	// 3. Send to Port
 	resp, err := s.mt5Port.SendOrder(ctx, req)
 	if err != nil {
-		log.Printf("[TradeService] Order execution failed via MT5Port: %v", err)
+		log.Error().Err(err).Msg("[TradeService] Order execution failed via MT5Port")
 		return nil, fmt.Errorf("failed to execute order on MT5: %w", err)
 	}
 
 	if !resp.IsSuccess() {
-		log.Printf("[TradeService] Order rejected by MT5: %s", resp.Message)
+		log.Warn().Str("message", resp.Message).Msg("[TradeService] Order rejected by MT5")
 		return resp, nil
 	}
 
-	log.Printf("[TradeService] Order executed successfully! Ticket ID: %d", resp.Ticket)
+	log.Info().Uint64("ticket", resp.Ticket).Msg("[TradeService] Order executed successfully")
 	return resp, nil
 }
 
