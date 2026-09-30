@@ -3,6 +3,7 @@ package database
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -126,4 +127,82 @@ func (s *Store) SaveAccountBalance(balance float64) error {
 		return fmt.Errorf("save account balance: %w", err)
 	}
 	return nil
+}
+
+// --- Trade Outcomes / Win-Rate per strategy ---
+
+// TradeOutcome คือผลลัพธ์จริงของ position ที่ปิดแล้ว หลัง attribute กลับไป
+// หา strategy ต้นเหตุแล้ว (ผ่าน StrategyTag) — main.go เป็นคนประกอบข้อมูลนี้
+// จากการจับคู่ ticket ที่ได้ตอน dispatch order กับ ticket ที่มาใน trade_closed event
+type TradeOutcome struct {
+	Symbol      string
+	StrategyTag string
+	Reason      string
+	Ticket      uint64
+	Profit      float64
+	IsWin       bool
+	Timestamp   time.Time
+}
+
+func (s *Store) SaveTradeOutcome(o TradeOutcome) error {
+	m := TradeOutcomeModel{
+		Symbol:      o.Symbol,
+		StrategyTag: o.StrategyTag,
+		Reason:      o.Reason,
+		Ticket:      o.Ticket,
+		Profit:      o.Profit,
+		IsWin:       o.IsWin,
+		Timestamp:   o.Timestamp,
+	}
+	if err := s.db.Create(&m).Error; err != nil {
+		return fmt.Errorf("save trade outcome: %w", err)
+	}
+	return nil
+}
+
+// WinRateStat สรุปสถิติแพ้/ชนะสะสมของแต่ละ strategy (แยกตาม StrategyTag)
+type WinRateStat struct {
+	StrategyTag string  `json:"strategy_tag"`
+	Wins        int     `json:"wins"`
+	Losses      int     `json:"losses"`
+	TotalTrades int     `json:"total_trades"`
+	WinRate     float64 `json:"win_rate"` // 0.0 - 1.0
+	TotalProfit float64 `json:"total_profit"`
+}
+
+// WinRateByStrategy คำนวณ win-rate สะสมของแต่ละ strategy จาก trade_outcomes ทั้งหมด
+func (s *Store) WinRateByStrategy() ([]WinRateStat, error) {
+	type row struct {
+		StrategyTag string
+		Wins        int
+		Losses      int
+		TotalProfit float64
+	}
+
+	var rows []row
+	err := s.db.Model(&TradeOutcomeModel{}).
+		Select("strategy_tag, SUM(CASE WHEN is_win THEN 1 ELSE 0 END) as wins, SUM(CASE WHEN is_win THEN 0 ELSE 1 END) as losses, SUM(profit) as total_profit").
+		Group("strategy_tag").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("compute win rate by strategy: %w", err)
+	}
+
+	out := make([]WinRateStat, len(rows))
+	for i, r := range rows {
+		total := r.Wins + r.Losses
+		var winRate float64
+		if total > 0 {
+			winRate = float64(r.Wins) / float64(total)
+		}
+		out[i] = WinRateStat{
+			StrategyTag: r.StrategyTag,
+			Wins:        r.Wins,
+			Losses:      r.Losses,
+			TotalTrades: total,
+			WinRate:     winRate,
+			TotalProfit: r.TotalProfit,
+		}
+	}
+	return out, nil
 }

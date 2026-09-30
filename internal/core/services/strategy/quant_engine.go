@@ -11,6 +11,15 @@ import (
 	"github.com/nes224/alphago-mt5/internal/core/ports"
 )
 
+// dailyRange เก็บ open/high/low ของ symbol สำหรับ "วันนี้" (ตามวันที่ปฏิทิน
+// ของเครื่อง) รีเซ็ตอัตโนมัติเมื่อข้ามวัน
+type dailyRange struct {
+	date string // "2006-01-02"
+	open float64
+	high float64
+	low  float64
+}
+
 type QuantEngine struct {
 	mu            sync.RWMutex
 	strategies    []ports.QuantStrategy
@@ -21,6 +30,13 @@ type QuantEngine struct {
 	windows       map[string]*Window
 	windowSize    int
 
+	// longTermWindows คือ Window เดียวกันแต่ยาวกว่ามาก ใช้เป็น proxy
+	// "higher timeframe trend" — longTermWindowSize <= 0 คือปิดการทำงานนี้
+	longTermWindows    map[string]*Window
+	longTermWindowSize int
+
+	dailyRanges map[string]*dailyRange
+
 	cooldownMu     sync.Mutex
 	signalCooldown time.Duration
 	lastSignalTime map[string]time.Time
@@ -28,15 +44,26 @@ type QuantEngine struct {
 
 func NewQuantEngine(bufferSize int, windowSize int) *QuantEngine {
 	return &QuantEngine{
-		strategies:     make([]ports.QuantStrategy, 0),
-		tickChan:       make(chan domain.Tick, bufferSize),
-		signalChan:     make(chan domain.OrderSignal, bufferSize),
-		latestMetrics:  make(map[string]domain.TickMetrics),
-		lastTickMap:    make(map[string]domain.Tick),
-		windows:        make(map[string]*Window),
-		windowSize:     windowSize,
-		lastSignalTime: make(map[string]time.Time),
+		strategies:      make([]ports.QuantStrategy, 0),
+		tickChan:        make(chan domain.Tick, bufferSize),
+		signalChan:      make(chan domain.OrderSignal, bufferSize),
+		latestMetrics:   make(map[string]domain.TickMetrics),
+		lastTickMap:     make(map[string]domain.Tick),
+		windows:         make(map[string]*Window),
+		windowSize:      windowSize,
+		longTermWindows: make(map[string]*Window),
+		dailyRanges:     make(map[string]*dailyRange),
+		lastSignalTime:  make(map[string]time.Time),
 	}
+}
+
+// SetLongTermWindowSize เปิดใช้งาน Dual-Window Trend Filter — window ที่สองนี้
+// ควรยาวกว่า windowSize หลักมาก (เช่น 50-100 เท่า) เพื่อประมาณทิศทาง trend
+// ภาพใหญ่กว่า โดยไม่ต้องสร้าง candle aggregator จริง ค่า default คือ 0 (ปิด)
+func (e *QuantEngine) SetLongTermWindowSize(n int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.longTermWindowSize = n
 }
 
 // SetSignalCooldown ตั้งระยะเวลาต่ำสุดระหว่าง signal ที่จะถูกส่งออกต่อ symbol
@@ -131,24 +158,36 @@ func (e *QuantEngine) calculateMetrics(tick domain.Tick) domain.TickMetrics {
 
 	window.Push(midPrice)
 
+	var longTermTrendSlope float64
+	if ltWindow := e.getOrCreateLongTermWindow(tick.Symbol); ltWindow != nil {
+		longTermTrendSlope = ltWindow.Slope()
+		ltWindow.Push(midPrice)
+	}
+
+	dayOpen, dayHigh, dayLow := e.updateDailyRange(tick.Symbol, midPrice, tick.Timestamp)
+
 	return domain.TickMetrics{
-		Symbol:         tick.Symbol,
-		Price:          midPrice,
-		Mean:           mean,
-		StdDev:         stdDev,
-		ZScore:         zScore,
-		TrendSlope:     trendSlope,
-		Bid:            tick.Bid,
-		Ask:            tick.Ask,
-		Spread:         tick.Ask - tick.Bid,
-		OpenInterest:   tick.OpenInterest,
-		OIDelta:        oiDelta,
-		OIVelocity:     oiVelocity,
-		VolumeDelta:    volumeDelta,
-		VolumeVelocity: volumeVelocity,
-		PriceVelocity:  priceVelocity,
-		Timestamp:      tick.Timestamp,
-		WindowSize:     window.Size(),
+		Symbol:             tick.Symbol,
+		Price:              midPrice,
+		Mean:               mean,
+		StdDev:             stdDev,
+		ZScore:             zScore,
+		TrendSlope:         trendSlope,
+		LongTermTrendSlope: longTermTrendSlope,
+		Bid:                tick.Bid,
+		Ask:                tick.Ask,
+		Spread:             tick.Ask - tick.Bid,
+		DailyOpen:          dayOpen,
+		DailyHigh:          dayHigh,
+		DailyLow:           dayLow,
+		OpenInterest:       tick.OpenInterest,
+		OIDelta:            oiDelta,
+		OIVelocity:         oiVelocity,
+		VolumeDelta:        volumeDelta,
+		VolumeVelocity:     volumeVelocity,
+		PriceVelocity:      priceVelocity,
+		Timestamp:          tick.Timestamp,
+		WindowSize:         window.Size(),
 	}
 }
 
@@ -203,4 +242,43 @@ func (e *QuantEngine) getOrCreateWindow(symbol string) *Window {
 	}
 
 	return w
+}
+
+// getOrCreateLongTermWindow คืน nil ถ้า SetLongTermWindowSize ไม่เคยถูกเรียก
+// (ฟีเจอร์นี้ปิดอยู่โดย default)
+func (e *QuantEngine) getOrCreateLongTermWindow(symbol string) *Window {
+	if e.longTermWindowSize <= 0 {
+		return nil
+	}
+
+	w, exists := e.longTermWindows[symbol]
+	if !exists {
+		w = NewWindow(e.longTermWindowSize)
+		e.longTermWindows[symbol] = w
+	}
+
+	return w
+}
+
+// updateDailyRange อัปเดต open/high/low ของ "วันนี้" ให้ symbol นี้ รีเซ็ต
+// อัตโนมัติเมื่อ tick.Timestamp ข้ามวันที่ปฏิทิน (เทียบจากวันที่ของ tick เอง
+// ไม่ใช่เวลาเครื่อง Go เพื่อให้ตรงกับเวลาตลาดจริงที่ EA ส่งมา)
+func (e *QuantEngine) updateDailyRange(symbol string, midPrice float64, tickTime time.Time) (open, high, low float64) {
+	today := tickTime.Format("2006-01-02")
+
+	r, exists := e.dailyRanges[symbol]
+	if !exists || r.date != today {
+		r = &dailyRange{date: today, open: midPrice, high: midPrice, low: midPrice}
+		e.dailyRanges[symbol] = r
+		return r.open, r.high, r.low
+	}
+
+	if midPrice > r.high {
+		r.high = midPrice
+	}
+	if midPrice < r.low {
+		r.low = midPrice
+	}
+
+	return r.open, r.high, r.low
 }

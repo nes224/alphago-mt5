@@ -40,3 +40,19 @@ type SignalRecordModel struct {
 }
 
 func (SignalRecordModel) TableName() string { return "signal_records" }
+
+// TradeOutcomeModel เก็บผลลัพธ์จริง (กำไร/ขาดทุน) ของแต่ละ position ที่ปิดแล้ว
+// พร้อม attribute กลับไปหา strategy ที่เป็นต้นเหตุ (ผ่าน StrategyTag ที่ตัดมา
+// จาก signal Reason เช่น "VOLUME_EXPANSION_BUY") ใช้คำนวณ win-rate ต่อ strategy
+type TradeOutcomeModel struct {
+	ID          uint   `gorm:"primaryKey"`
+	Symbol      string `gorm:"index"`
+	StrategyTag string `gorm:"index"` // ส่วนก่อน " (" ของ signal Reason เช่น "VOLUME_EXPANSION_BUY"
+	Reason      string // Reason เต็มตอนที่ signal ถูกยิงออกไป (มี context เพิ่ม เช่น Z-Score, SweptLevel)
+	Ticket      uint64 `gorm:"index"`
+	Profit      float64
+	IsWin       bool
+	Timestamp   time.Time
+}
+
+func (TradeOutcomeModel) TableName() string { return "trade_outcomes" }
