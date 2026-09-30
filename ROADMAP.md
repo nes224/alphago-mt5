@@ -46,6 +46,12 @@
   - [x] Signal Execution Dispatcher: ดึง OrderSignal จาก SignalChannel() ผ่าน Risk Guard แล้วส่งให้ tcp_client.go ยิง Order เข้า MT5 (alphago_mt5.mq)
   - [x] Main Wireup & Integration Tests: ประกอบระบบทั้งหมดใน cmd/app/main.go และเขียน quant_engine_test.go
 
+- [ ] **Market Context Awareness** (เพิ่มเข้ามาจากบทสนทนา 2026-09-30 — ตอนนี้ทุก strategy มองเห็นแค่ 20-300 tick ย้อนหลัง [~4 วินาที - 5 นาทีของราคาจริง] ไม่มี "ความจำ" อะไรไกลกว่านั้นเลย ไม่รู้บริบทตลาดภาพใหญ่เลยก่อนยิง signal)
+  - [ ] Multi-Timeframe Confirmation: เริ่มจาก Dual-Window Trend Filter (ใช้ `Window`/`TrendSlope` เดิม แต่สร้างอีกตัวที่ window ยาวกว่ามาก เช่น 1000-2000 tick เป็น proxy "ภาพใหญ่กว่า") ก่อน ยังไม่ต้องสร้าง candle aggregator M5/M15/H1 เต็มรูปแบบ (ขัดกับ sub-millisecond latency ที่ตั้งใจไว้แต่แรก) — ให้ strategy ยิงเฉพาะทิศทางที่สอดคล้องกับ trend ของ window ยาวเท่านั้น
+  - [ ] Session High/Low & Daily Structure: เก็บ session open/high/low และ daily open ไว้เป็น reference level ที่แท้จริง แทนที่จะพึ่งแค่ rolling N-tick buffer ที่ไม่รู้ว่าอยู่ตรงไหนของวัน
+  - [ ] Adaptive Learning จากผลเทรดจริง: ตอนนี้ `RiskGuard` มีแค่ circuit breaker ที่ "หยุด" ระบบทั้งหมดตอนแพ้ติดกันเกิน limit (`MaxConsecutiveLosses`) — เป็นการหยุดฉุกเฉิน ไม่ใช่การเรียนรู้/ปรับพฤติกรรม ยังไม่มี logic ที่ลด lot หรือปิด strategy ตัวที่ win-rate แย่ชั่วคราวตามผลสะสมจริง (ตอนนี้มี `trade_closed` event + `signal_records` ใน DB แล้ว พอจะต่อยอดทำ win-rate per-strategy ได้)
+  - [ ] News/Economic Calendar — track อยู่ใน [Phase 3](#-phase-3-the-intelligence-claude-ai-integration--️-paused) แล้ว (ตอนนี้ pause ไว้)
+
 ---
 
 ## 🟣 Phase 3: The Intelligence (Claude AI Integration) — ⏸️ PAUSED
