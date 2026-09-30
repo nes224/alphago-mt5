@@ -2,7 +2,7 @@ package strategy
 
 import (
 	"context"
-	"math"
+	"log"
 	"sync"
 
 	"github.com/nes224/alphago-mt5/internal/core/domain"
@@ -16,18 +16,19 @@ type QuantEngine struct {
 	tickChan      chan domain.Tick
 	signalChan    chan domain.OrderSignal
 	lastTickMap   map[string]domain.Tick
-	priceHistory  map[string][]float64
+	windows       map[string]*Window
 	windowSize    int
 }
 
 func NewQuantEngine(bufferSize int, windowSize int) *QuantEngine {
 	return &QuantEngine{
-		strategies:   make([]ports.QuantStrategy, 0),
-		tickChan:     make(chan domain.Tick, bufferSize),
-		signalChan:   make(chan domain.OrderSignal, bufferSize),
-		lastTickMap:  make(map[string]domain.Tick),
-		priceHistory: make(map[string][]float64),
-		windowSize:   windowSize,
+		strategies:    make([]ports.QuantStrategy, 0),
+		tickChan:      make(chan domain.Tick, bufferSize),
+		signalChan:    make(chan domain.OrderSignal, bufferSize),
+		latestMetrics: make(map[string]domain.TickMetrics),
+		lastTickMap:   make(map[string]domain.Tick),
+		windows:       make(map[string]*Window),
+		windowSize:    windowSize,
 	}
 }
 
@@ -63,7 +64,7 @@ func (e *QuantEngine) Start(ctx context.Context) {
 
 func (e *QuantEngine) calculateMetrics(tick domain.Tick) domain.TickMetrics {
 	lastTick, exists := e.lastTickMap[tick.Symbol]
-	midPrice := tick.MidPrice()
+	midPrice := (tick.Ask + tick.Bid) / 2.0
 
 	var oiDelta int64 = 0
 	var oiVelocity float64 = 0
@@ -75,79 +76,62 @@ func (e *QuantEngine) calculateMetrics(tick domain.Tick) domain.TickMetrics {
 		timeDelta := tick.Timestamp.Sub(lastTick.Timestamp).Seconds()
 		if timeDelta > 0 {
 			oiVelocity = float64(oiDelta) / timeDelta
-			priceDelta := midPrice - lastTick.MidPrice()
-			priceVelocity = priceDelta / timeDelta
+			lastMidPrice := (lastTick.Ask + lastTick.Bid) / 2.0
+			priceVelocity = (midPrice - lastMidPrice) / timeDelta
 		}
 	}
 
-	e.lastTickMap[tick.Symbol] = tick
+	window := e.getOrCreateWindow(tick.Symbol)
+	mean := window.Mean()
+	stdDev := window.StdDev()
 
-	history := e.priceHistory[tick.Symbol]
-
-	mean, stdDev, zScore := e.calculateZScore(history, midPrice)
-
-	history = append(history, midPrice)
-	if len(history) > e.windowSize {
-		history = history[1:]
+	var zScore float64
+	if stdDev > 0 {
+		zScore = (midPrice - mean) / stdDev
 	}
-	e.priceHistory[tick.Symbol] = history
+
+	window.Push(midPrice)
 
 	return domain.TickMetrics{
 		Symbol:        tick.Symbol,
-		Bid:           tick.Bid,
-		Ask:           tick.Ask,
-		Spread:        tick.Spread(),
-		PriceVelocity: priceVelocity,
-		OIDelta:       oiDelta,
-		OIVelocity:    oiVelocity,
-		OpenInterest:  tick.OpenInterest,
+		Price:         midPrice,
 		Mean:          mean,
 		StdDev:        stdDev,
 		ZScore:        zScore,
+		Bid:           tick.Bid,
+		Ask:           tick.Ask,
+		Spread:        tick.Ask - tick.Bid,
+		OpenInterest:  tick.OpenInterest,
+		OIDelta:       oiDelta,
+		OIVelocity:    oiVelocity,
+		PriceVelocity: priceVelocity,
 		Timestamp:     tick.Timestamp,
+		WindowSize:    window.Size(),
 	}
-}
-
-func (e *QuantEngine) calculateZScore(data []float64, currentPrice float64) (mean float64, stdDev float64, zScore float64) {
-	n := float64(len(data))
-	if n == 0 {
-		return 0, 0, 0
-	}
-
-	var sum float64
-	for _, v := range data {
-		sum += v
-	}
-
-	mean = sum / n
-
-	var varianceSum float64
-	for _, v := range data {
-		varianceSum += math.Pow(v-mean, 2)
-	}
-
-	stdDev = math.Sqrt(varianceSum / n)
-
-	if stdDev > 0 {
-		zScore = (currentPrice - mean) / stdDev
-	}
-
-	return mean, stdDev, zScore
 }
 
 func (e *QuantEngine) ProcessTick(tick domain.Tick) domain.TickMetrics {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 
 	metrics := e.calculateMetrics(tick)
+	e.latestMetrics[tick.Symbol] = metrics
+	e.lastTickMap[tick.Symbol] = tick
 
-	for _, s := range e.strategies {
+	strategies := make([]ports.QuantStrategy, len(e.strategies))
+	copy(strategies, e.strategies)
+
+	e.mu.Unlock()
+
+	for _, s := range strategies {
 		if signal := s.OnTick(tick, metrics); signal != nil {
-			e.signalChan <- *signal
+			select {
+			case e.signalChan <- *signal:
+			default:
+				log.Printf("[QuantEngine] WARNING: signal channel full, dropping signal for %s", signal.Symbol)
+			}
 		}
 	}
 
-	e.lastTickMap[tick.Symbol] = tick
 	return metrics
 }
 
@@ -155,19 +139,22 @@ func (e *QuantEngine) GetLatestMetrics(symbol string) domain.TickMetrics {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	if m, exists := e.latestMetrics[symbol]; exists {
-		return m
-	}
-
-	return domain.TickMetrics{}
+	return e.latestMetrics[symbol]
 }
 
 func (e *QuantEngine) UpdateMetrics(symbol string, m domain.TickMetrics) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if e.latestMetrics == nil {
-		e.latestMetrics = make(map[string]domain.TickMetrics)
-	}
 	e.latestMetrics[symbol] = m
+}
+
+func (e *QuantEngine) getOrCreateWindow(symbol string) *Window {
+	w, exists := e.windows[symbol]
+	if !exists {
+		w = NewWindow(e.windowSize)
+		e.windows[symbol] = w
+	}
+
+	return w
 }
