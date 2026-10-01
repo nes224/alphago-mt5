@@ -89,3 +89,72 @@ func TestTCPAdapter_Integration(t *testing.T) {
 		t.Errorf("Expected ticket 88888, got %d", resp.Ticket)
 	}
 }
+
+func startMockAccountInfoServer(t *testing.T, address string) func() {
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		t.Fatalf("Failed to start mock server: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		reader := bufio.NewReader(conn)
+		reqBytes, err := reader.ReadBytes('\n')
+		if err != nil {
+			return
+		}
+		if string(reqBytes) != "{\"action\":\"ACCOUNT_INFO\"}\n" {
+			t.Errorf("Expected ACCOUNT_INFO request, got %q", string(reqBytes))
+		}
+
+		resp := domain.AccountInfo{
+			Status:      "SUCCESS",
+			Balance:     1248.21,
+			Equity:      1248.21,
+			Currency:    "USD",
+			Leverage:    500,
+			AccountType: "DEMO",
+			Broker:      "Exness Technologies Ltd",
+			Login:       123456,
+			Symbols:     []string{"XAUUSDm", "EURUSDm"},
+		}
+
+		respBytes, _ := json.Marshal(resp)
+		conn.Write(append(respBytes, '\n'))
+	}()
+
+	return func() {
+		listener.Close()
+		<-done
+	}
+}
+
+func TestTCPAdapter_GetAccountInfo(t *testing.T) {
+	serverAddr := "127.0.0.1:5565"
+	stopServer := startMockAccountInfoServer(t, serverAddr)
+	defer stopServer()
+
+	time.Sleep(50 * time.Millisecond)
+
+	adapter := mt5.NewTCPAdapter(serverAddr, 2*time.Second)
+	defer adapter.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	info, err := adapter.GetAccountInfo(ctx)
+	if err != nil {
+		t.Fatalf("GetAccountInfo failed: %v", err)
+	}
+
+	if info.AccountType != "DEMO" || info.Balance != 1248.21 || len(info.Symbols) != 2 {
+		t.Errorf("Unexpected account info: %+v", info)
+	}
+}

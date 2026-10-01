@@ -1,6 +1,7 @@
 package database_test
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -26,7 +27,15 @@ func newTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("failed to open in-memory sqlite: %v", err)
 	}
 
-	if err := db.AutoMigrate(&database.AccountStateModel{}, &database.RiskGuardStateModel{}, &database.SignalRecordModel{}, &database.TradeOutcomeModel{}); err != nil {
+	if err := db.AutoMigrate(
+		&database.AccountStateModel{},
+		&database.RiskGuardStateModel{},
+		&database.SignalRecordModel{},
+		&database.TradeOutcomeModel{},
+		&database.OpenPositionSymbolModel{},
+		&database.PendingAttributionModel{},
+		&database.PendingOrderModel{},
+	); err != nil {
 		t.Fatalf("failed to auto-migrate schema: %v", err)
 	}
 
@@ -73,6 +82,7 @@ func TestStore_RiskGuardState_RoundTrip(t *testing.T) {
 		StartingDailyEquity: 1000.0,
 		CurrentDailyEquity:  950.0,
 		OpenPositionsCount:  2,
+		OpenPositionSymbols: map[string]int{"XAUUSDm": 1, "EURUSDm": 1},
 		ConsecutiveLosses:   3,
 		IsCircuitTripped:    true,
 		LastResetDate:       "2026-09-30",
@@ -88,8 +98,37 @@ func TestStore_RiskGuardState_RoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatal("Expected ok=true after saving")
 	}
-	if got != state {
+	if !reflect.DeepEqual(got, state) {
 		t.Errorf("Expected %+v, got %+v", state, got)
+	}
+}
+
+func TestStore_RiskGuardState_OpenPositionSymbols_OverwritesOnResave(t *testing.T) {
+	store := database.NewStore(newTestDB(t))
+
+	if err := store.SaveRiskState(risk.PersistedState{
+		OpenPositionSymbols: map[string]int{"XAUUSDm": 1},
+		LastResetDate:       "2026-09-30",
+	}); err != nil {
+		t.Fatalf("unexpected error saving initial state: %v", err)
+	}
+
+	// Position closes and a different symbol opens — resaving must drop
+	// XAUUSDm entirely, not just add EURUSDm alongside it.
+	if err := store.SaveRiskState(risk.PersistedState{
+		OpenPositionSymbols: map[string]int{"EURUSDm": 1},
+		LastResetDate:       "2026-09-30",
+	}); err != nil {
+		t.Fatalf("unexpected error re-saving state: %v", err)
+	}
+
+	got, _, err := store.LoadRiskState()
+	if err != nil {
+		t.Fatalf("unexpected error loading state: %v", err)
+	}
+	want := map[string]int{"EURUSDm": 1}
+	if !reflect.DeepEqual(got.OpenPositionSymbols, want) {
+		t.Errorf("Expected OpenPositionSymbols %+v, got %+v", want, got.OpenPositionSymbols)
 	}
 }
 
@@ -192,5 +231,98 @@ func TestStore_WinRateByStrategy_ComputesPerStrategyStats(t *testing.T) {
 	}
 	if sellStats.Wins != 0 || sellStats.Losses != 1 || sellStats.WinRate != 0 {
 		t.Errorf("Expected 0 wins / 1 loss / 0%% win rate for LIQUIDITY_SWEEP_FADE_SELL, got %+v", sellStats)
+	}
+}
+
+func TestStore_PendingAttribution_RoundTrip(t *testing.T) {
+	store := database.NewStore(newTestDB(t))
+
+	if _, ok, err := store.LoadAndDeleteAttribution(12345); err != nil || ok {
+		t.Fatalf("Expected no attribution saved yet, got ok=%v err=%v", ok, err)
+	}
+
+	if err := store.SaveAttribution(12345, "VOLUME_EXPANSION_BUY (Z=2.1)"); err != nil {
+		t.Fatalf("unexpected error saving attribution: %v", err)
+	}
+
+	reason, ok, err := store.LoadAndDeleteAttribution(12345)
+	if err != nil {
+		t.Fatalf("unexpected error loading attribution: %v", err)
+	}
+	if !ok || reason != "VOLUME_EXPANSION_BUY (Z=2.1)" {
+		t.Errorf("Expected reason 'VOLUME_EXPANSION_BUY (Z=2.1)', got %q (ok=%v)", reason, ok)
+	}
+
+	// A second load must find nothing — LoadAndDeleteAttribution consumes the row.
+	if _, ok, err := store.LoadAndDeleteAttribution(12345); err != nil || ok {
+		t.Fatalf("Expected attribution to be consumed after first load, got ok=%v err=%v", ok, err)
+	}
+}
+
+func TestStore_PendingOrders_OutboxLifecycle(t *testing.T) {
+	store := database.NewStore(newTestDB(t))
+
+	id, err := store.CreatePendingOrder(pipeline.PendingOrder{
+		Symbol:     "XAUUSDm",
+		Action:     "BUY",
+		LotSize:    0.05,
+		StopLoss:   4190.0,
+		TakeProfit: 4200.0,
+		Reason:     "VOLUME_EXPANSION_BUY",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error creating pending order: %v", err)
+	}
+
+	unresolved, err := store.UnresolvedPendingOrders()
+	if err != nil {
+		t.Fatalf("unexpected error listing unresolved orders: %v", err)
+	}
+	if len(unresolved) != 1 || unresolved[0].Status != database.PendingOrderStatusPending {
+		t.Fatalf("Expected 1 PENDING order, got %+v", unresolved)
+	}
+
+	// Simulate the sender goroutine confirming success.
+	if err := store.MarkOrderOutcome(id, database.PendingOrderStatusSent, 999, ""); err != nil {
+		t.Fatalf("unexpected error marking order sent: %v", err)
+	}
+
+	unresolved, err = store.UnresolvedPendingOrders()
+	if err != nil {
+		t.Fatalf("unexpected error listing unresolved orders after resolution: %v", err)
+	}
+	if len(unresolved) != 0 {
+		t.Errorf("Expected no unresolved orders after marking SENT, got %+v", unresolved)
+	}
+
+	all, err := store.PendingOrders(10)
+	if err != nil {
+		t.Fatalf("unexpected error listing pending orders: %v", err)
+	}
+	if len(all) != 1 || all[0].Status != database.PendingOrderStatusSent || all[0].Ticket != 999 {
+		t.Errorf("Expected 1 SENT order with ticket 999, got %+v", all)
+	}
+}
+
+func TestStore_PendingOrders_UnresolvedIncludesUnknown(t *testing.T) {
+	store := database.NewStore(newTestDB(t))
+
+	id, err := store.CreatePendingOrder(pipeline.PendingOrder{Symbol: "XAUUSDm", Action: "BUY"})
+	if err != nil {
+		t.Fatalf("unexpected error creating pending order: %v", err)
+	}
+
+	// Simulate a transport error (timeout/EOF) — status becomes UNKNOWN, still
+	// needs a manual check, so it must still show up as unresolved.
+	if err := store.MarkOrderOutcome(id, database.PendingOrderStatusUnknown, 0, "failed to read response from MT5: EOF"); err != nil {
+		t.Fatalf("unexpected error marking order unknown: %v", err)
+	}
+
+	unresolved, err := store.UnresolvedPendingOrders()
+	if err != nil {
+		t.Fatalf("unexpected error listing unresolved orders: %v", err)
+	}
+	if len(unresolved) != 1 || unresolved[0].Status != database.PendingOrderStatusUnknown {
+		t.Fatalf("Expected 1 UNKNOWN order to remain unresolved, got %+v", unresolved)
 	}
 }

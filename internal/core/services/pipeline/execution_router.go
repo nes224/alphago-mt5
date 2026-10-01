@@ -41,6 +41,31 @@ type SignalStore interface {
 	RecentSignals(limit int) ([]SignalRecord, error)
 }
 
+// PendingOrder คือข้อมูลที่จำเป็นต้องเขียนลง Outbox ก่อนจริงๆ จะยิง order เข้า
+// MT5 — แยกจาก risk.PreparedOrder เพื่อไม่ให้ package risk ต้องรู้จัก storage
+type PendingOrder struct {
+	Symbol     string
+	Action     string
+	LotSize    float64
+	StopLoss   float64
+	TakeProfit float64
+	Reason     string
+}
+
+// สถานะ Outbox — ต้องตรงกับค่า string ของ database.PendingOrderStatus* (เก็บ
+// เป็น string ธรรมดาไม่ผูก type กับ adapter ชั้นนอกตามหลัก Hexagonal Architecture)
+const (
+	OutboxStatusFailed = "FAILED"
+)
+
+// OutboxStore เป็น port ที่ adapter ชั้นนอกต้อง implement เพื่อรองรับ Outbox
+// Pattern — เขียนแถว PENDING ไว้ก่อนส่งจริง กัน order ที่ "ตัดสินใจจะส่งแล้ว"
+// หายไปเงียบๆ ถ้า service crash ระหว่างตัดสินใจกับส่งจริงเข้า MT5
+type OutboxStore interface {
+	CreatePendingOrder(order PendingOrder) (id uint, err error)
+	MarkOrderOutcome(id uint, status string, ticket uint64, errMsg string) error
+}
+
 type ExecutionRouter struct {
 	engine      ports.QuantEngine
 	riskMgr     *risk.RiskManager
@@ -48,6 +73,7 @@ type ExecutionRouter struct {
 	orderSink   chan<- risk.PreparedOrder
 	workerCount int
 	store       SignalStore
+	outbox      OutboxStore
 
 	historyMu sync.Mutex
 	history   []SignalRecord
@@ -59,6 +85,14 @@ func (r *ExecutionRouter) AttachStore(store SignalStore) {
 	r.historyMu.Lock()
 	defer r.historyMu.Unlock()
 	r.store = store
+}
+
+// AttachOutboxStore ผูก OutboxStore เข้ากับ ExecutionRouter — ถ้าไม่ผูกไว้
+// (nil) จะข้ามการเขียน outbox row ไปเลย (ทำงานเหมือนเดิมก่อนมี Outbox Pattern)
+func (r *ExecutionRouter) AttachOutboxStore(store OutboxStore) {
+	r.historyMu.Lock()
+	defer r.historyMu.Unlock()
+	r.outbox = store
 }
 
 func NewExecutionRouter(
@@ -118,6 +152,28 @@ func (r *ExecutionRouter) Start(ctx context.Context) {
 						}
 					}
 
+					// เขียน outbox row ก่อนจริงๆ จะ push เข้า orderSink — ถ้า service
+					// crash หลังจุดนี้แต่ก่อน sender goroutine ยิงเข้า MT5 จริง จะยังมี
+					// แถว PENDING ค้างให้ตรวจเจอตอน restart แทนที่จะหายไปเงียบๆ
+					r.historyMu.Lock()
+					outbox := r.outbox
+					r.historyMu.Unlock()
+					if outbox != nil {
+						id, err := outbox.CreatePendingOrder(PendingOrder{
+							Symbol:     preparedOrder.Symbol,
+							Action:     string(preparedOrder.Action),
+							LotSize:    preparedOrder.LotSize,
+							StopLoss:   preparedOrder.StopLoss,
+							TakeProfit: preparedOrder.TakeProfit,
+							Reason:     preparedOrder.Reason,
+						})
+						if err != nil {
+							log.Warn().Int("worker", workerID).Err(err).Msg("[ExecutionRouter] failed to write outbox row, proceeding without it")
+						} else {
+							preparedOrder.OutboxID = id
+						}
+					}
+
 					select {
 					case r.orderSink <- *preparedOrder:
 						if r.riskGuard != nil {
@@ -141,6 +197,14 @@ func (r *ExecutionRouter) Start(ctx context.Context) {
 						})
 					default:
 						log.Warn().Int("worker", workerID).Str("symbol", preparedOrder.Symbol).Msg("Order Sink Channel is full, dropping order")
+						// Order ไม่มีทางไปถึง MT5 แน่นอน (channel เต็ม ไม่ใช่ crash) — ปิด
+						// outbox row เป็น FAILED ทันที กัน restart ครั้งถัดไปเข้าใจผิดว่า
+						// เป็น order ค้างที่ต้องเช็คมือ
+						if outbox != nil && preparedOrder.OutboxID != 0 {
+							if err := outbox.MarkOrderOutcome(preparedOrder.OutboxID, OutboxStatusFailed, 0, "dropped: order sink queue full"); err != nil {
+								log.Warn().Int("worker", workerID).Err(err).Msg("[ExecutionRouter] failed to mark dropped outbox row as failed")
+							}
+						}
 						r.recordSignal(SignalRecord{
 							Symbol:  preparedOrder.Symbol,
 							Action:  string(preparedOrder.Action),

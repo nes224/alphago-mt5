@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "AlphaGo Trading System"
 #property link      "https://github.com/nes224/alphago-mt5"
-#property version   "1.10"
+#property version   "1.20"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -334,14 +334,54 @@ string ProcessTradeCommand(string json)
    else if(action == "MODIFY")
    {
       if(ticket == 0) return CreateJsonResponse("FAILED", 0, "Ticket ID required for MODIFY", 0.0);
-      
+
       if(g_trade.PositionModify(ticket, sl, tp))
          return CreateJsonResponse("SUCCESS", ticket, "Position modified successfully", 0.0);
       else
          return CreateJsonResponse("FAILED", ticket, StringFormat("Modify failed. RetCode: %d", g_trade.ResultRetcode()), 0.0);
    }
+   else if(action == "ACCOUNT_INFO")
+   {
+      return CreateAccountInfoResponse();
+   }
 
    return CreateJsonResponse("FAILED", 0, "Unsupported Action: " + action, 0.0);
+}
+
+//+------------------------------------------------------------------+
+//| Account Info — ดึง balance/equity/account type/symbol ที่เทรดได้ |
+//| สดจาก MT5 โดยตรง (แทนการอ่าน ACCOUNT_BALANCE จาก app.env ฝั่ง Go) |
+//+------------------------------------------------------------------+
+string CreateAccountInfoResponse()
+{
+   double balance  = AccountInfoDouble(ACCOUNT_BALANCE);
+   double equity   = AccountInfoDouble(ACCOUNT_EQUITY);
+   string currency = AccountInfoString(ACCOUNT_CURRENCY);
+   long   leverage = AccountInfoInteger(ACCOUNT_LEVERAGE);
+   long   login    = AccountInfoInteger(ACCOUNT_LOGIN);
+   string broker   = AccountInfoString(ACCOUNT_COMPANY);
+
+   long trade_mode = AccountInfoInteger(ACCOUNT_TRADE_MODE);
+   string account_type = "UNKNOWN";
+   if(trade_mode == ACCOUNT_TRADE_MODE_DEMO)        account_type = "DEMO";
+   else if(trade_mode == ACCOUNT_TRADE_MODE_REAL)    account_type = "REAL";
+   else if(trade_mode == ACCOUNT_TRADE_MODE_CONTEST) account_type = "CONTEST";
+
+   // Symbol ที่อยู่ใน Market Watch ตอนนี้ — คือ symbol ที่ "เทรดได้จริง" ไม่ใช่
+   // symbol list ทั้งหมดที่ broker มี (SymbolsTotal(false) จะได้ list ยาวเกินจำเป็น)
+   string symbols_json = "[";
+   int total = SymbolsTotal(true);
+   for(int i = 0; i < total; i++)
+   {
+      if(i > 0) symbols_json += ",";
+      symbols_json += "\"" + SymbolName(i, true) + "\"";
+   }
+   symbols_json += "]";
+
+   return StringFormat(
+      "{\"status\":\"SUCCESS\",\"balance\":%.2f,\"equity\":%.2f,\"currency\":\"%s\",\"leverage\":%I64d,\"account_type\":\"%s\",\"broker\":\"%s\",\"login\":%I64d,\"symbols\":%s}\n",
+      balance, equity, currency, leverage, account_type, broker, login, symbols_json
+   );
 }
 
 //+------------------------------------------------------------------+

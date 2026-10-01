@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -78,30 +77,6 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	// 2.5 Connect to PostgreSQL — persist account balance / risk guard state /
-	// signal history ข้าม restart (internal/adapters/database)
-	db, err := database.Connect(cfg.DatabaseURL)
-	if err != nil {
-		log.Fatal().Err(err).Msg("Database connection failed")
-	}
-	store := database.NewStore(db)
-
-	// ACCOUNT_BALANCE ใน app.env เป็นแค่ seed สำหรับรันครั้งแรก — ถ้าเคย
-	// บันทึก balance ไว้ใน DB แล้ว (จาก run ก่อนหน้า) จะใช้ค่านั้นแทน
-	accountBalance, hasSavedBalance, err := store.LoadAccountBalance()
-	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to load account balance from DB")
-	}
-	if !hasSavedBalance {
-		accountBalance = cfg.AccountBalance
-		if err := store.SaveAccountBalance(accountBalance); err != nil {
-			log.Fatal().Err(err).Msg("Failed to seed account balance into DB")
-		}
-		log.Info().Float64("balance", accountBalance).Msg("💾 Seeded account balance in DB (from ACCOUNT_BALANCE in app.env)")
-	} else {
-		log.Info().Float64("balance", accountBalance).Msg("💾 Loaded account balance from DB")
-	}
-
 	// 3. Initialize Adapters (MT5 Command TCP & Market Data Stream)
 	mt5Addr := fmt.Sprintf("%s:%d", cfg.MT5Host, cfg.MT5Port)
 	timeout := time.Duration(cfg.MT5TimeoutSeconds) * time.Second
@@ -112,7 +87,63 @@ func main() {
 	streamAdapter := mt5.NewStreamAdapter(streamAddr)
 	defer streamAdapter.Close()
 
-	// 4. Initialize Core Quant Engine & Strategies
+	// 3.5 ดึงข้อมูลบัญชีสดจาก MT5 (balance, account type, broker, symbol ที่
+	// เทรดได้) — ต้องมี MT5 Terminal + EA เปิด Algo Trading อยู่แล้วตอนนี้ ถ้า
+	// ต่อไม่ได้ (เช่นยังไม่ได้ attach EA) จะ fallback ไปใช้ ACCOUNT_BALANCE จาก
+	// app.env แทน ไม่ fail การ start ทั้งระบบ
+	liveAccountInfo, err := mt5Adapter.GetAccountInfo(ctx)
+	if err != nil {
+		log.Warn().Err(err).Msg("⚠️ Failed to fetch live account info from MT5 — falling back to ACCOUNT_BALANCE in app.env (เช็คว่า MT5 Terminal + EA เปิด Algo Trading อยู่ไหม)")
+	} else {
+		event := log.Info()
+		if liveAccountInfo.AccountType == "REAL" {
+			event = log.Warn() // เตือนดังๆ กันเผลอยิง order เข้าบัญชีจริงโดยไม่รู้ตัว
+		}
+		event.
+			Str("account_type", liveAccountInfo.AccountType).
+			Str("broker", liveAccountInfo.Broker).
+			Int64("login", liveAccountInfo.Login).
+			Str("currency", liveAccountInfo.Currency).
+			Int64("leverage", liveAccountInfo.Leverage).
+			Strs("tradable_symbols", liveAccountInfo.Symbols).
+			Msg("🔌 Connected to MT5 account")
+	}
+
+	// 4. Connect to PostgreSQL — persist account balance / risk guard state /
+	// signal history ข้าม restart (internal/adapters/database)
+	db, err := database.Connect(cfg.DatabaseURL)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Database connection failed")
+	}
+	store := database.NewStore(db)
+
+	// ครั้งแรกที่รัน (ยังไม่เคยบันทึก balance ใน DB) seed ด้วย balance สดจาก
+	// MT5 ถ้าดึงได้ ไม่งั้น fallback ไป ACCOUNT_BALANCE ใน app.env — หลังจากนี้
+	// DB คือ source of truth เสมอ อัปเดตตาม P/L เหตุการณ์จริง ไม่อ่านจาก MT5
+	// สดซ้ำอีก (กัน balance เพี้ยนจาก fee/swap ที่ DB ไม่ได้ track)
+	accountBalance, hasSavedBalance, err := store.LoadAccountBalance()
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to load account balance from DB")
+	}
+	if !hasSavedBalance {
+		if liveAccountInfo != nil {
+			accountBalance = liveAccountInfo.Balance
+			if err := store.SaveAccountBalance(accountBalance); err != nil {
+				log.Fatal().Err(err).Msg("Failed to seed account balance into DB")
+			}
+			log.Info().Float64("balance", accountBalance).Msg("💾 Seeded account balance in DB (live from MT5)")
+		} else {
+			accountBalance = cfg.AccountBalance
+			if err := store.SaveAccountBalance(accountBalance); err != nil {
+				log.Fatal().Err(err).Msg("Failed to seed account balance into DB")
+			}
+			log.Info().Float64("balance", accountBalance).Msg("💾 Seeded account balance in DB (from ACCOUNT_BALANCE in app.env — MT5 unreachable)")
+		}
+	} else {
+		log.Info().Float64("balance", accountBalance).Msg("💾 Loaded account balance from DB")
+	}
+
+	// 5. Initialize Core Quant Engine & Strategies
 	quantEngine := strategy.NewQuantEngine(BufferCapacity, WindowSize)
 	quantEngine.SetSignalCooldown(SignalCooldown)
 	quantEngine.SetLongTermWindowSize(LongTermWindowSize)
@@ -130,7 +161,7 @@ func main() {
 	quantEngine.RegisterStrategy(sweepStrategy)
 	log.Info().Str("strategy", sweepStrategy.ID()).Msg("✅ Registered Strategy")
 
-	// 5. Initialize Risk Management & Execution Pipeline
+	// 6. Initialize Risk Management & Execution Pipeline
 	// ค่า risk/lot/SL-TP ดึงจาก app.env (ปรับได้โดยไม่ต้อง compile ใหม่) —
 	// ยังไม่มีการดึง balance สดจาก MT5 อัตโนมัติ (แยกจาก accountBalance ที่มา
 	// จาก DB/seed ด้านบน) ต้องอัปเดต balance เองเป็นระยะจนกว่าจะมี integration
@@ -149,18 +180,31 @@ func main() {
 	orderSink := make(chan risk.PreparedOrder, BufferCapacity)
 	execRouter := pipeline.NewExecutionRouter(quantEngine, riskManager, riskGuard, orderSink, WorkerCount)
 	execRouter.AttachStore(store)
+	execRouter.AttachOutboxStore(store)
 
-	// 6. Start Engine & Router Background Workers
+	// เช็ค outbox ที่ค้างจาก run ก่อนหน้า (PENDING = crash ระหว่างตัดสินใจส่งกับ
+	// ส่งจริง, UNKNOWN = SendOrder error เช่น timeout/EOF ไม่รู้ว่าเข้าตลาดจริง
+	// ไหม) — ไม่ auto-resend เพราะเสี่ยงเปิด position ซ้อน แค่เตือนดังๆ ให้เช็ค
+	// มือผ่าน MT5 tab Trade ก่อน (ดูรายละเอียดที่ GET /api/v1/pending-orders)
+	if unresolved, err := store.UnresolvedPendingOrders(); err != nil {
+		log.Warn().Err(err).Msg("Failed to check unresolved pending orders on startup")
+	} else if len(unresolved) > 0 {
+		for _, o := range unresolved {
+			log.Warn().
+				Uint("id", o.ID).
+				Str("symbol", o.Symbol).
+				Str("action", o.Action).
+				Str("status", o.Status).
+				Time("created_at", o.CreatedAt).
+				Msg("⚠️ Unresolved order from a previous run — verify manually in MT5 (tab Trade) before trading this symbol again")
+		}
+	}
+
+	// 7. Start Engine & Router Background Workers
 	quantEngine.Start(ctx)
 	execRouter.Start(ctx)
 
-	// ticketToReason จับคู่ ticket ที่ MT5 คืนมาตอนเปิด order กับ Reason ของ
-	// signal ที่เป็นต้นเหตุ — ให้ตอน trade_closed event มาถึง (มีแค่ ticket)
-	// รู้ว่าควร attribute ผลแพ้/ชนะกลับไปหา strategy ไหน เขียนจาก goroutine
-	// ข้อ 7 อ่าน+ลบจาก goroutine ข้อ 8.5 เลยต้องเป็น sync.Map
-	var ticketToReason sync.Map
-
-	// 7. Worker: Dispatch Prepared Orders จาก Engine ส่งไปยัง MT5 ผ่าน TCP Adapter
+	// 8. Worker: Dispatch Prepared Orders จาก Engine ส่งไปยัง MT5 ผ่าน TCP Adapter
 	go func() {
 		for {
 			select {
@@ -181,22 +225,52 @@ func main() {
 
 				resp, err := mt5Adapter.SendOrder(ctx, tradeReq)
 				if err != nil {
-					log.Error().Err(err).Str("symbol", tradeReq.Symbol).Msg("❌ Failed to send order to MT5")
-				} else {
-					if resp.IsSuccess() {
-						ticketToReason.Store(resp.Ticket, preparedOrder.Reason)
+					// Transport error (timeout/EOF/connection reset) — ไม่รู้ว่า order
+					// เข้าตลาดจริงไปแล้วหรือเปล่า ไม่ auto-resend และไม่ปลด position
+					// lock (เสี่ยงเปิดซ้อนถ้าจริงๆ เข้าไปแล้ว) แค่บันทึกเป็น UNKNOWN ให้
+					// เช็คมือผ่าน GET /api/v1/pending-orders
+					log.Error().Err(err).Str("symbol", tradeReq.Symbol).Msg("❌ Failed to send order to MT5 — verify manually in MT5 before retrying this symbol")
+					if preparedOrder.OutboxID != 0 {
+						if uerr := store.MarkOrderOutcome(preparedOrder.OutboxID, database.PendingOrderStatusUnknown, 0, err.Error()); uerr != nil {
+							log.Warn().Err(uerr).Msg("Failed to mark outbox row as unknown")
+						}
+					}
+				} else if resp.IsSuccess() {
+					if err := store.SaveAttribution(resp.Ticket, preparedOrder.Reason); err != nil {
+						log.Warn().Err(err).Msg("Failed to save pending attribution")
+					}
+					if preparedOrder.OutboxID != 0 {
+						if uerr := store.MarkOrderOutcome(preparedOrder.OutboxID, database.PendingOrderStatusSent, resp.Ticket, ""); uerr != nil {
+							log.Warn().Err(uerr).Msg("Failed to mark outbox row as sent")
+						}
 					}
 					log.Info().
 						Str("action", string(tradeReq.Action)).
 						Str("symbol", tradeReq.Symbol).
 						Float64("lot", tradeReq.Volume).
+						Uint64("ticket", resp.Ticket).
 						Msg("🟢 ORDER DISPATCHED TO MT5")
+				} else {
+					// Broker ปฏิเสธ order ชัดเจน (เช่น invalid stops, margin ไม่พอ) — รู้
+					// แน่นอนว่าไม่มี position เปิดจริง ปลด lock ทันทีกัน symbol นี้ค้าง
+					// สถานะ "มี position เปิดอยู่" ทั้งที่ไม่มีจริง
+					riskGuard.MarkPositionClosed(preparedOrder.Symbol)
+					if preparedOrder.OutboxID != 0 {
+						if uerr := store.MarkOrderOutcome(preparedOrder.OutboxID, database.PendingOrderStatusFailed, 0, resp.Message); uerr != nil {
+							log.Warn().Err(uerr).Msg("Failed to mark outbox row as failed")
+						}
+					}
+					log.Warn().
+						Str("action", string(tradeReq.Action)).
+						Str("symbol", tradeReq.Symbol).
+						Str("broker_message", resp.Message).
+						Msg("🔴 ORDER REJECTED BY MT5")
 				}
 			}
 		}
 	}()
 
-	// 8. Stream Ticks Consumer -> Push เข้า PureQuantEngine
+	// 9. Stream Ticks Consumer -> Push เข้า PureQuantEngine
 	tickChan, err := streamAdapter.SubscribeTicks(ctx)
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to subscribe ticks")
@@ -210,7 +284,7 @@ func main() {
 		}()
 	}
 
-	// 8.5 Trade Closed Events Consumer -> ป้อนผลแพ้/ชนะจริงกลับเข้า RiskGuard
+	// 9.5 Trade Closed Events Consumer -> ป้อนผลแพ้/ชนะจริงกลับเข้า RiskGuard
 	// และอัปเดต balance ตาม P/L จริง (ใช้ connection เดียวกับ tick stream —
 	// ต้องแก้ EA ให้ยิง OnTradeTransaction() มาด้วย ไม่งั้น channel นี้จะเงียบตลอด)
 	tradeClosedChan, err := streamAdapter.SubscribeTradeEvents(ctx)
@@ -234,11 +308,14 @@ func main() {
 				}
 				riskGuard.UpdateAccountEquity(newBalance)
 
-				// Attribute ผลลัพธ์กลับไปหา strategy ต้นเหตุ ถ้าจับคู่ ticket ได้
-				// (จะจับไม่ได้ถ้า service restart ระหว่างที่ position ยังเปิดค้างอยู่
-				// — ticketToReason เป็น in-memory ล้วนๆ ไม่ได้ persist)
-				if reasonVal, ok := ticketToReason.LoadAndDelete(event.Ticket); ok {
-					reason := reasonVal.(string)
+				// Attribute ผลลัพธ์กลับไปหา strategy ต้นเหตุ ถ้าจับคู่ ticket ได้ —
+				// persist ลง pending_attributions แล้ว รอดจาก restart ระหว่าง
+				// position ยังเปิดค้างอยู่ได้ (ต่างจาก sync.Map เดิม)
+				reason, ok, attrErr := store.LoadAndDeleteAttribution(event.Ticket)
+				if attrErr != nil {
+					log.Warn().Err(attrErr).Uint64("ticket", event.Ticket).Msg("Failed to load pending attribution")
+				}
+				if ok {
 					strategyTag := reason
 					if idx := strings.Index(reason, " ("); idx >= 0 {
 						strategyTag = reason[:idx]
@@ -269,10 +346,10 @@ func main() {
 		}()
 	}
 
-	// 9. Setup HTTP Services & Handlers (REST API)
+	// 10. Setup HTTP Services & Handlers (REST API)
 	tradeService := services.NewTradeService(mt5Adapter, riskGuard)
 	tradeHandler := httphandler.NewTradeHandler(tradeService)
-	monitorHandler := httphandler.NewMonitorHandler(quantEngine, execRouter, riskGuard, store, TradingSymbol)
+	monitorHandler := httphandler.NewMonitorHandler(quantEngine, execRouter, riskGuard, store, mt5Adapter, TradingSymbol)
 
 	r := gin.Default()
 	r.GET("/health", func(c *gin.Context) {
@@ -290,6 +367,9 @@ func main() {
 		v1.GET("/status", monitorHandler.Status)
 		v1.GET("/signals", monitorHandler.RecentSignals)
 		v1.GET("/strategy-stats", monitorHandler.StrategyStats)
+		v1.GET("/pending-orders", monitorHandler.PendingOrders)
+		v1.GET("/account-info", monitorHandler.AccountInfo)
+		v1.POST("/risk/resync-positions", monitorHandler.ResyncPositions)
 	}
 
 	srv := &http.Server{
@@ -297,7 +377,7 @@ func main() {
 		Handler: r,
 	}
 
-	// 10. Start HTTP Server
+	// 11. Start HTTP Server
 	go func() {
 		log.Info().Str("addr", srv.Addr).Msg("🌐 HTTP Server is running")
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -305,7 +385,7 @@ func main() {
 		}
 	}()
 
-	// 11. Graceful Shutdown Handler
+	// 12. Graceful Shutdown Handler
 	<-ctx.Done()
 	log.Info().Msg("🛑 Shutting down Alphago MT5 Service gracefully...")
 
