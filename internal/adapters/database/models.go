@@ -4,21 +4,36 @@ import "time"
 
 // AccountStateModel เก็บ balance ปัจจุบันของบัญชี — มีแค่แถวเดียวเสมอ (ID=1)
 // อัปเดตทุกครั้งที่ equity เปลี่ยน แทนที่การแก้ ACCOUNT_BALANCE ใน app.env มือ
+//
+// ตั้งใจเก็บแค่ Balance เท่านั้น — ห้ามเพิ่ม field อื่นเข้ามาในตารางนี้ เพราะ
+// SaveAccountBalance() เขียนทับทั้งแถวทุกครั้งที่ trade ปิด (ทุกไม่กี่นาที) ถ้า
+// มี field อื่นอยู่ด้วยจะโดนเขียนทับกลับเป็นค่าว่างโดยไม่ตั้งใจ — risk policy
+// ที่ผู้ใช้ตั้งเอง (risk %, lot limits, ฯลฯ) แยกเก็บที่ RiskConfigModel แทน
 type AccountStateModel struct {
-	ID                     uint `gorm:"primaryKey"`
-	Balance                float64
-	RISK_PER_TRADE_PERCENT float64
-	MIN_LOT_SIZE           float64
-	MAX_LOT_SIZE           float64
-	MIN_SL_DISTANCE        float64
-	MAX_SL_DISTANCE        float64
-	MAX_DAILY_LOSS_PERCENT float64
-	MAX_OPEN_POSITIONS     float64
-	MAX_SPREAD_PIPS        float64
-	UpdatedAt              time.Time
+	ID        uint `gorm:"primaryKey"`
+	Balance   float64
+	UpdatedAt time.Time
 }
 
 func (AccountStateModel) TableName() string { return "account_state" }
+
+// RiskConfigModel เก็บ risk policy ที่ผู้ใช้ตั้งเอง (ไม่ใช่ข้อเท็จจริงของบัญชี
+// ดึงจาก MT5 ไม่ได้) — มีแค่แถวเดียวเสมอ (ID=1) ตั้งผ่าน PUT /api/v1/risk/config
+// แทนการแก้ app.env + restart service
+type RiskConfigModel struct {
+	ID                  uint `gorm:"primaryKey"`
+	RiskPerTradePercent float64
+	MinLotSize          float64
+	MaxLotSize          float64
+	MinSLDistance       float64
+	MaxSLDistance       float64
+	MaxDailyLossPercent float64
+	MaxOpenPositions    int
+	MaxSpreadPips       float64
+	UpdatedAt           time.Time
+}
+
+func (RiskConfigModel) TableName() string { return "risk_config" }
 
 // RiskGuardStateModel เก็บสถานะ RiskGuard ให้รอดจาก restart — มีแค่แถวเดียวเสมอ (ID=1)
 type RiskGuardStateModel struct {

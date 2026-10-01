@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm/logger"
 
 	"github.com/nes224/alphago-mt5/internal/adapters/database"
+	"github.com/nes224/alphago-mt5/internal/core/domain"
 	"github.com/nes224/alphago-mt5/internal/core/services/pipeline"
 	"github.com/nes224/alphago-mt5/internal/core/services/risk"
 )
@@ -35,6 +36,7 @@ func newTestDB(t *testing.T) *gorm.DB {
 		&database.OpenPositionSymbolModel{},
 		&database.PendingAttributionModel{},
 		&database.PendingOrderModel{},
+		&database.RiskConfigModel{},
 	); err != nil {
 		t.Fatalf("failed to auto-migrate schema: %v", err)
 	}
@@ -324,5 +326,47 @@ func TestStore_PendingOrders_UnresolvedIncludesUnknown(t *testing.T) {
 	}
 	if len(unresolved) != 1 || unresolved[0].Status != database.PendingOrderStatusUnknown {
 		t.Fatalf("Expected 1 UNKNOWN order to remain unresolved, got %+v", unresolved)
+	}
+}
+
+func TestStore_RiskConfig_RoundTrip(t *testing.T) {
+	store := database.NewStore(newTestDB(t))
+
+	if _, ok, err := store.LoadRiskConfig(); err != nil || ok {
+		t.Fatalf("Expected no risk config saved yet, got ok=%v err=%v", ok, err)
+	}
+
+	cfg := domain.RiskConfig{
+		RiskPerTradePercent: 0.02,
+		MinLotSize:          0.01,
+		MaxLotSize:          0.1,
+		MinSLDistance:       3.0,
+		MaxSLDistance:       20.0,
+		MaxDailyLossPercent: 0.05,
+		MaxOpenPositions:    3,
+		MaxSpreadPips:       4.0,
+	}
+	if err := store.SaveRiskConfig(cfg); err != nil {
+		t.Fatalf("unexpected error saving risk config: %v", err)
+	}
+
+	got, ok, err := store.LoadRiskConfig()
+	if err != nil {
+		t.Fatalf("unexpected error loading risk config: %v", err)
+	}
+	if !ok || got != cfg {
+		t.Errorf("Expected %+v, got %+v (ok=%v)", cfg, got, ok)
+	}
+
+	// Saving again should update the single row, not insert a new one — and
+	// must not disturb account_state (AccountStateModel and RiskConfigModel
+	// are separate tables precisely so SaveAccountBalance can't wipe this).
+	cfg.MaxOpenPositions = 1
+	if err := store.SaveRiskConfig(cfg); err != nil {
+		t.Fatalf("unexpected error re-saving risk config: %v", err)
+	}
+	got, _, _ = store.LoadRiskConfig()
+	if got.MaxOpenPositions != 1 {
+		t.Errorf("Expected updated MaxOpenPositions=1, got %d", got.MaxOpenPositions)
 	}
 }

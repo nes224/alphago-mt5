@@ -7,6 +7,8 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/nes224/alphago-mt5/internal/core/domain"
+	"github.com/nes224/alphago-mt5/internal/core/services"
 	"github.com/nes224/alphago-mt5/internal/core/services/pipeline"
 	"github.com/nes224/alphago-mt5/internal/core/services/risk"
 )
@@ -369,4 +371,52 @@ func (s *Store) WinRateByStrategy() ([]WinRateStat, error) {
 		}
 	}
 	return out, nil
+}
+
+// --- Risk Config (risk policy ที่ผู้ใช้ตั้งเอง, แยกจาก account balance) ---
+
+var _ services.RiskConfigStore = (*Store)(nil)
+
+// SaveRiskConfig เขียนทับ risk_config แถวเดียว (ID=1) ทั้งหมด — เรียกตอน
+// PUT /api/v1/risk/config หลัง validate ผ่านแล้ว
+func (s *Store) SaveRiskConfig(cfg domain.RiskConfig) error {
+	m := RiskConfigModel{
+		ID:                  singleRowID,
+		RiskPerTradePercent: cfg.RiskPerTradePercent,
+		MinLotSize:          cfg.MinLotSize,
+		MaxLotSize:          cfg.MaxLotSize,
+		MinSLDistance:       cfg.MinSLDistance,
+		MaxSLDistance:       cfg.MaxSLDistance,
+		MaxDailyLossPercent: cfg.MaxDailyLossPercent,
+		MaxOpenPositions:    cfg.MaxOpenPositions,
+		MaxSpreadPips:       cfg.MaxSpreadPips,
+	}
+	if err := s.db.Save(&m).Error; err != nil {
+		return fmt.Errorf("save risk config: %w", err)
+	}
+	return nil
+}
+
+// LoadRiskConfig คืน ok=false ถ้ายังไม่เคยตั้งค่าไว้เลย (ยังไม่เคยเรียก PUT
+// /api/v1/risk/config สักครั้ง) — ให้ main.go seed จาก app.env แทนตอน startup
+func (s *Store) LoadRiskConfig() (domain.RiskConfig, bool, error) {
+	var m RiskConfigModel
+	err := s.db.First(&m, singleRowID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return domain.RiskConfig{}, false, nil
+	}
+	if err != nil {
+		return domain.RiskConfig{}, false, fmt.Errorf("load risk config: %w", err)
+	}
+
+	return domain.RiskConfig{
+		RiskPerTradePercent: m.RiskPerTradePercent,
+		MinLotSize:          m.MinLotSize,
+		MaxLotSize:          m.MaxLotSize,
+		MinSLDistance:       m.MinSLDistance,
+		MaxSLDistance:       m.MaxSLDistance,
+		MaxDailyLossPercent: m.MaxDailyLossPercent,
+		MaxOpenPositions:    m.MaxOpenPositions,
+		MaxSpreadPips:       m.MaxSpreadPips,
+	}, true, nil
 }

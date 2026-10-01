@@ -3,11 +3,13 @@ package risk
 import (
 	"fmt"
 	"math"
+	"sync"
 
 	"github.com/nes224/alphago-mt5/internal/core/domain"
 )
 
 type RiskManager struct {
+	mu                  sync.RWMutex
 	riskPerTradePercent float64
 	accountBalance      float64
 	minLotSize          float64
@@ -27,6 +29,18 @@ func NewRiskManager(riskPerTradePercent, accountBalance, minLot, maxLot, minSLDi
 	}
 }
 
+// UpdateConfig เปลี่ยน risk policy แบบ live (ไม่ต้อง restart service) — เรียก
+// จาก RiskConfigService ตอน PUT /api/v1/risk/config ผ่าน validation แล้ว
+func (r *RiskManager) UpdateConfig(riskPerTradePercent, minLotSize, maxLotSize, minSLDistance, maxSLDistance float64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.riskPerTradePercent = riskPerTradePercent
+	r.minLotSize = minLotSize
+	r.maxLotSize = maxLotSize
+	r.minSLDistance = minSLDistance
+	r.maxSLDistance = maxSLDistance
+}
+
 type PreparedOrder struct {
 	Symbol     string
 	Action     domain.SignalAction
@@ -43,8 +57,14 @@ func (r *RiskManager) CalculateOrder(signal domain.OrderSignal, metrics domain.T
 		return nil, fmt.Errorf("zero volatility (StdDev=0), skipping order calculation")
 	}
 
+	r.mu.RLock()
+	minSLDistance, maxSLDistance := r.minSLDistance, r.maxSLDistance
+	minLotSize, maxLotSize := r.minLotSize, r.maxLotSize
+	accountBalance, riskPerTradePercent := r.accountBalance, r.riskPerTradePercent
+	r.mu.RUnlock()
+
 	slDistance := 2.0 * metrics.StdDev
-	slDistance = math.Max(r.minSLDistance, math.Min(r.maxSLDistance, slDistance))
+	slDistance = math.Max(minSLDistance, math.Min(maxSLDistance, slDistance))
 
 	var entryPrice, stopLoss, takeProfit float64
 
@@ -58,12 +78,12 @@ func (r *RiskManager) CalculateOrder(signal domain.OrderSignal, metrics domain.T
 		takeProfit = entryPrice - slDistance
 	}
 
-	riskAmount := r.accountBalance * r.riskPerTradePercent
+	riskAmount := accountBalance * riskPerTradePercent
 
 	contractSize := 100.0
 	lotSize := riskAmount / (slDistance * contractSize)
 
-	lotSize = math.Max(r.minLotSize, math.Min(r.maxLotSize, lotSize))
+	lotSize = math.Max(minLotSize, math.Min(maxLotSize, lotSize))
 	lotSize = math.Round(lotSize*100) / 100
 
 	return &PreparedOrder{
