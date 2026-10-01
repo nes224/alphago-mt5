@@ -292,7 +292,7 @@ func TestQuantEngine_PipelineIntegration(t *testing.T) {
 	quantEngine := strategy.NewQuantEngine(bufferCapicity, windowSize)
 
 	symbol := "XAUUSDm"
-	volumeStrategy := strategy.NewVolumeExpansionStrategy(symbol, 1.5, 5.0, 0.1)
+	volumeStrategy := strategy.NewVolumeExpansionStrategy(symbol, 1.5, 5.0, 0.1, 0)
 	quantEngine.RegisterStrategy(volumeStrategy)
 
 	riskManager := risk.NewRiskManager(0.01, 10000.0, 0.01, 1.00, 0.01, 100.0)
@@ -459,5 +459,92 @@ func TestQuantEngine_SignalCooldown_IndependentPerSymbol(t *testing.T) {
 
 	if signalCount != 2 {
 		t.Fatalf("Expected 1 signal per distinct symbol (2 total), got %d", signalCount)
+	}
+}
+
+func TestQuantEngine_LongTermTrendSlope_DisabledByDefault(t *testing.T) {
+	engine := strategy.NewQuantEngine(100, 5)
+
+	now := time.Now()
+	for i := 0; i < 10; i++ {
+		m := engine.ProcessTick(domain.Tick{
+			Symbol:    "XAUUSDm",
+			Bid:       2600.0 + float64(i),
+			Ask:       2600.2 + float64(i),
+			Timestamp: now.Add(time.Duration(i) * time.Millisecond),
+		})
+		if m.LongTermTrendSlope != 0 {
+			t.Fatalf("Expected LongTermTrendSlope to stay 0 when SetLongTermWindowSize was never called, got %f", m.LongTermTrendSlope)
+		}
+	}
+}
+
+func TestQuantEngine_LongTermTrendSlope_TracksLongerWindow(t *testing.T) {
+	engine := strategy.NewQuantEngine(100, 3) // short window = 3 tick, reacts fast
+	engine.SetLongTermWindowSize(10)          // long window = 10 tick, reacts slower
+
+	now := time.Now()
+	// Flat prices first so both windows start at slope 0.
+	for i := 0; i < 5; i++ {
+		engine.ProcessTick(domain.Tick{Symbol: "XAUUSDm", Bid: 2600.0, Ask: 2600.2, Timestamp: now.Add(time.Duration(i) * time.Millisecond)})
+	}
+
+	// Then a sustained rise — short window (3 tick) should pick up the new
+	// slope fully within a few ticks; long window (10 tick) needs more ticks
+	// since it's still diluted by the flat history sitting in its buffer.
+	var lastMetrics domain.TickMetrics
+	for i := 0; i < 3; i++ {
+		lastMetrics = engine.ProcessTick(domain.Tick{
+			Symbol:    "XAUUSDm",
+			Bid:       2600.0 + float64(i+1)*2,
+			Ask:       2600.2 + float64(i+1)*2,
+			Timestamp: now.Add(time.Duration(5+i) * time.Millisecond),
+		})
+	}
+
+	if lastMetrics.TrendSlope <= 0 {
+		t.Errorf("Expected short-term TrendSlope to be positive after the rise, got %f", lastMetrics.TrendSlope)
+	}
+	if lastMetrics.LongTermTrendSlope <= 0 {
+		t.Errorf("Expected LongTermTrendSlope to also turn positive (just smaller), got %f", lastMetrics.LongTermTrendSlope)
+	}
+	if lastMetrics.LongTermTrendSlope >= lastMetrics.TrendSlope {
+		t.Errorf("Expected the long window's slope (%f) to be diluted below the short window's slope (%f)", lastMetrics.LongTermTrendSlope, lastMetrics.TrendSlope)
+	}
+}
+
+func TestQuantEngine_DailyRange_TracksOpenHighLowAndResetsOnNewDay(t *testing.T) {
+	engine := strategy.NewQuantEngine(100, 5)
+
+	day1 := time.Date(2026, 9, 30, 10, 0, 0, 0, time.UTC)
+	m := engine.ProcessTick(domain.Tick{Symbol: "XAUUSDm", Bid: 2600.0, Ask: 2600.2, Timestamp: day1})
+	if m.DailyOpen != m.Price || m.DailyHigh != m.Price || m.DailyLow != m.Price {
+		t.Fatalf("Expected first tick of the day to seed Open/High/Low at %f, got open=%f high=%f low=%f", m.Price, m.DailyOpen, m.DailyHigh, m.DailyLow)
+	}
+	dayOpen := m.DailyOpen
+
+	// A higher tick later the same day should raise DailyHigh but not DailyOpen.
+	m = engine.ProcessTick(domain.Tick{Symbol: "XAUUSDm", Bid: 2610.0, Ask: 2610.2, Timestamp: day1.Add(1 * time.Hour)})
+	if m.DailyOpen != dayOpen {
+		t.Errorf("Expected DailyOpen to stay %f, got %f", dayOpen, m.DailyOpen)
+	}
+	if m.DailyHigh != m.Price {
+		t.Errorf("Expected DailyHigh to rise to %f, got %f", m.Price, m.DailyHigh)
+	}
+
+	// A lower tick should lower DailyLow but not touch DailyHigh.
+	m = engine.ProcessTick(domain.Tick{Symbol: "XAUUSDm", Bid: 2590.0, Ask: 2590.2, Timestamp: day1.Add(2 * time.Hour)})
+	if m.DailyLow != m.Price {
+		t.Errorf("Expected DailyLow to fall to %f, got %f", m.Price, m.DailyLow)
+	}
+	if m.DailyHigh != 2610.1 {
+		t.Errorf("Expected DailyHigh to stay at the earlier peak 2610.1, got %f", m.DailyHigh)
+	}
+
+	// A tick on the next calendar day should reset Open/High/Low fresh.
+	day2 := day1.Add(24 * time.Hour)
+	m = engine.ProcessTick(domain.Tick{Symbol: "XAUUSDm", Bid: 2700.0, Ask: 2700.2, Timestamp: day2})
+	if m.DailyOpen != m.Price || m.DailyHigh != m.Price || m.DailyLow != m.Price {
+		t.Errorf("Expected daily range to reset fresh on a new calendar day, got open=%f high=%f low=%f (price=%f)", m.DailyOpen, m.DailyHigh, m.DailyLow, m.Price)
 	}
 }

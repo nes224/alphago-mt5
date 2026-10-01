@@ -14,19 +14,26 @@ import (
 // reversal. To avoid fading genuine breakouts, it stays silent whenever the
 // engine's TrendSlope metric shows the market is trending rather than
 // ranging (see Window.Slope).
+//
+// minLongTermTrendSlope เป็น Dual-Window Trend Filter (ทางเลือก, 0 = ปิด):
+// ถ้าตั้งไว้ จะ fade เฉพาะทิศทางที่สอดคล้องกับ trend ใหญ่เท่านั้น — sweep low
+// แล้ว fade ด้วย BUY ต้องมี trend ใหญ่เป็นขาขึ้น, sweep high แล้ว fade ด้วย
+// SELL ต้องมี trend ใหญ่เป็นขาลง (ซื้อตอนย่อในขาขึ้น/ขายตอนเด้งในขาลง)
 type LiquiditySweepStrategy struct {
-	id                  string
-	symbol              string
-	trendSlopeThreshold float64
-	detector            *LiquiditySweepDetector
+	id                    string
+	symbol                string
+	trendSlopeThreshold   float64
+	minLongTermTrendSlope float64
+	detector              *LiquiditySweepDetector
 }
 
-func NewLiquiditySweepStrategy(id string, symbol string, windowSize int, trendSlopeThreshold float64) *LiquiditySweepStrategy {
+func NewLiquiditySweepStrategy(id string, symbol string, windowSize int, trendSlopeThreshold float64, minLongTermTrendSlope float64) *LiquiditySweepStrategy {
 	return &LiquiditySweepStrategy{
-		id:                  id,
-		symbol:              symbol,
-		trendSlopeThreshold: trendSlopeThreshold,
-		detector:            NewLiquiditySweepDetector(windowSize),
+		id:                    id,
+		symbol:                symbol,
+		trendSlopeThreshold:   trendSlopeThreshold,
+		minLongTermTrendSlope: minLongTermTrendSlope,
+		detector:              NewLiquiditySweepDetector(windowSize),
 	}
 }
 
@@ -54,6 +61,9 @@ func (s *LiquiditySweepStrategy) OnTick(tick domain.Tick, metrics domain.TickMet
 
 	switch event.SweepType {
 	case SweepTypeHigh:
+		if !s.longTermTrendAllows(metrics.LongTermTrendSlope, false) {
+			return nil
+		}
 		return &domain.OrderSignal{
 			Symbol:    tick.Symbol,
 			Action:    domain.SignalAction(domain.ActionSell),
@@ -62,6 +72,9 @@ func (s *LiquiditySweepStrategy) OnTick(tick domain.Tick, metrics domain.TickMet
 			Timestamp: time.Now(),
 		}
 	case SweepTypeLow:
+		if !s.longTermTrendAllows(metrics.LongTermTrendSlope, true) {
+			return nil
+		}
 		return &domain.OrderSignal{
 			Symbol:    tick.Symbol,
 			Action:    domain.SignalAction(domain.ActionBuy),
@@ -72,4 +85,16 @@ func (s *LiquiditySweepStrategy) OnTick(tick domain.Tick, metrics domain.TickMet
 	default:
 		return nil
 	}
+}
+
+// longTermTrendAllows เช็คว่าทิศทางที่จะ fade (wantBuy) สอดคล้องกับ trend ของ
+// window ยาวไหม — ถ้า minLongTermTrendSlope <= 0 ถือว่าปิดการเช็คนี้ (อนุญาตเสมอ)
+func (s *LiquiditySweepStrategy) longTermTrendAllows(longTermSlope float64, wantBuy bool) bool {
+	if s.minLongTermTrendSlope <= 0 {
+		return true
+	}
+	if wantBuy {
+		return longTermSlope >= s.minLongTermTrendSlope
+	}
+	return longTermSlope <= -s.minLongTermTrendSlope
 }

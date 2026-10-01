@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -42,6 +44,15 @@ const (
 	// SweepTrendSlopeThreshold เป็นค่าเริ่มต้นแบบหยาบ ยังไม่ได้ผ่าน backtest —
 	// ปรับตามพฤติกรรมราคาจริงของ TradingSymbol ทีหลัง
 	SweepTrendSlopeThreshold = 5.0
+
+	// LongTermWindowSize คือ Dual-Window Trend Filter — window ที่ยาวกว่า
+	// WindowSize (20 tick) มาก ใช้เป็น proxy "higher timeframe" โดยไม่ต้อง
+	// สร้าง candle aggregator จริง ยังเป็นค่าประมาณ ต้องดู tick rate จริงก่อนปรับ
+	LongTermWindowSize = 2000
+	// MinLongTermTrendSlope เป็น threshold ตัดสินว่า slope ของ window ยาวถือว่า
+	// "มีทิศทาง" พอจะใช้กรองหรือยัง — window ยาวกว่าทำให้ slope เฉลี่ยเล็กกว่า
+	// window สั้นโดยธรรมชาติ ค่านี้ยังไม่ได้ tune จากข้อมูลจริงเลย
+	MinLongTermTrendSlope = 0.05
 
 	// SignalCooldown กันไม่ให้ QuantEngine ยิง signal ถี่เกินไปต่อ symbol
 	// ไม่ว่า threshold ของ strategy ตัวไหนจะยังไม่ได้ tune ดีแค่ไหนก็ตาม —
@@ -102,17 +113,18 @@ func main() {
 	// 4. Initialize Core Quant Engine & Strategies
 	quantEngine := strategy.NewQuantEngine(BufferCapacity, WindowSize)
 	quantEngine.SetSignalCooldown(SignalCooldown)
+	quantEngine.SetLongTermWindowSize(LongTermWindowSize)
 
 	// Register Volume Expansion Strategy (ใช้ Volume แทน Open Interest เพราะ
 	// Exness/โบรกเกอร์ CFD ไม่ส่งข้อมูล Open Interest จริงมาให้)
 	// minVolumeVelocity ขยับขึ้นจาก 1.0 (ไวเกินไปมาก ยิงแทบทุก tick บนข้อมูลจริง)
 	// — ยังเป็นค่าประมาณ ต้องดู VolVel จริงจาก /api/v1/signals แล้ว tune ต่อ
-	volumeStrategy := strategy.NewVolumeExpansionStrategy("VOLUME_EXPANSION_XAUUSD", 2.0, 50.0, 0.2)
+	volumeStrategy := strategy.NewVolumeExpansionStrategy("VOLUME_EXPANSION_XAUUSD", 2.0, 50.0, 0.2, MinLongTermTrendSlope)
 	quantEngine.RegisterStrategy(volumeStrategy)
 	log.Info().Str("strategy", volumeStrategy.ID()).Msg("✅ Registered Strategy")
 
 	// Register Liquidity Sweep Fade Strategy
-	sweepStrategy := strategy.NewLiquiditySweepStrategy("LIQUIDITY_SWEEP_FADE_XAUUSD", TradingSymbol, SweepWindowSize, SweepTrendSlopeThreshold)
+	sweepStrategy := strategy.NewLiquiditySweepStrategy("LIQUIDITY_SWEEP_FADE_XAUUSD", TradingSymbol, SweepWindowSize, SweepTrendSlopeThreshold, MinLongTermTrendSlope)
 	quantEngine.RegisterStrategy(sweepStrategy)
 	log.Info().Str("strategy", sweepStrategy.ID()).Msg("✅ Registered Strategy")
 
@@ -140,6 +152,12 @@ func main() {
 	quantEngine.Start(ctx)
 	execRouter.Start(ctx)
 
+	// ticketToReason จับคู่ ticket ที่ MT5 คืนมาตอนเปิด order กับ Reason ของ
+	// signal ที่เป็นต้นเหตุ — ให้ตอน trade_closed event มาถึง (มีแค่ ticket)
+	// รู้ว่าควร attribute ผลแพ้/ชนะกลับไปหา strategy ไหน เขียนจาก goroutine
+	// ข้อ 7 อ่าน+ลบจาก goroutine ข้อ 8.5 เลยต้องเป็น sync.Map
+	var ticketToReason sync.Map
+
 	// 7. Worker: Dispatch Prepared Orders จาก Engine ส่งไปยัง MT5 ผ่าน TCP Adapter
 	go func() {
 		for {
@@ -159,10 +177,13 @@ func main() {
 					TP:     preparedOrder.TakeProfit,
 				}
 
-				_, err := mt5Adapter.SendOrder(ctx, tradeReq)
+				resp, err := mt5Adapter.SendOrder(ctx, tradeReq)
 				if err != nil {
 					log.Error().Err(err).Str("symbol", tradeReq.Symbol).Msg("❌ Failed to send order to MT5")
 				} else {
+					if resp.IsSuccess() {
+						ticketToReason.Store(resp.Ticket, preparedOrder.Reason)
+					}
 					log.Info().
 						Str("action", string(tradeReq.Action)).
 						Str("symbol", tradeReq.Symbol).
@@ -196,7 +217,8 @@ func main() {
 	} else {
 		go func() {
 			for event := range tradeClosedChan {
-				riskGuard.RecordTradeResult(event.Profit > 0)
+				isWin := event.Profit > 0
+				riskGuard.RecordTradeResult(isWin)
 				riskGuard.MarkPositionClosed(event.Symbol)
 
 				currentBalance, _, err := store.LoadAccountBalance()
@@ -209,6 +231,31 @@ func main() {
 					log.Warn().Err(err).Msg("Failed to save account balance after trade close")
 				}
 				riskGuard.UpdateAccountEquity(newBalance)
+
+				// Attribute ผลลัพธ์กลับไปหา strategy ต้นเหตุ ถ้าจับคู่ ticket ได้
+				// (จะจับไม่ได้ถ้า service restart ระหว่างที่ position ยังเปิดค้างอยู่
+				// — ticketToReason เป็น in-memory ล้วนๆ ไม่ได้ persist)
+				if reasonVal, ok := ticketToReason.LoadAndDelete(event.Ticket); ok {
+					reason := reasonVal.(string)
+					strategyTag := reason
+					if idx := strings.Index(reason, " ("); idx >= 0 {
+						strategyTag = reason[:idx]
+					}
+
+					if err := store.SaveTradeOutcome(database.TradeOutcome{
+						Symbol:      event.Symbol,
+						StrategyTag: strategyTag,
+						Reason:      reason,
+						Ticket:      event.Ticket,
+						Profit:      event.Profit,
+						IsWin:       isWin,
+						Timestamp:   event.Timestamp,
+					}); err != nil {
+						log.Warn().Err(err).Msg("Failed to save trade outcome")
+					}
+				} else {
+					log.Warn().Uint64("ticket", event.Ticket).Msg("Trade closed but no matching signal reason found (service restarted while position was open?)")
+				}
 
 				log.Info().
 					Str("symbol", event.Symbol).
@@ -223,7 +270,7 @@ func main() {
 	// 9. Setup HTTP Services & Handlers (REST API)
 	tradeService := services.NewTradeService(mt5Adapter, riskGuard)
 	tradeHandler := httphandler.NewTradeHandler(tradeService)
-	monitorHandler := httphandler.NewMonitorHandler(quantEngine, execRouter, riskGuard, TradingSymbol)
+	monitorHandler := httphandler.NewMonitorHandler(quantEngine, execRouter, riskGuard, store, TradingSymbol)
 
 	r := gin.Default()
 	r.GET("/health", func(c *gin.Context) {
@@ -240,6 +287,7 @@ func main() {
 		v1.PUT("/orders/modify", tradeHandler.ModifyOder)
 		v1.GET("/status", monitorHandler.Status)
 		v1.GET("/signals", monitorHandler.RecentSignals)
+		v1.GET("/strategy-stats", monitorHandler.StrategyStats)
 	}
 
 	srv := &http.Server{

@@ -26,7 +26,7 @@ func newTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("failed to open in-memory sqlite: %v", err)
 	}
 
-	if err := db.AutoMigrate(&database.AccountStateModel{}, &database.RiskGuardStateModel{}, &database.SignalRecordModel{}); err != nil {
+	if err := db.AutoMigrate(&database.AccountStateModel{}, &database.RiskGuardStateModel{}, &database.SignalRecordModel{}, &database.TradeOutcomeModel{}); err != nil {
 		t.Fatalf("failed to auto-migrate schema: %v", err)
 	}
 
@@ -141,5 +141,56 @@ func TestExecutionRouter_AttachStore_PersistsAndReadsBack(t *testing.T) {
 	}
 	if len(recent) != 1 || recent[0].Symbol != "XAUUSDm" {
 		t.Errorf("Expected 1 signal for XAUUSDm, got %+v", recent)
+	}
+}
+
+func TestStore_WinRateByStrategy_ComputesPerStrategyStats(t *testing.T) {
+	store := database.NewStore(newTestDB(t))
+
+	outcomes := []database.TradeOutcome{
+		{Symbol: "XAUUSDm", StrategyTag: "VOLUME_EXPANSION_BUY", Ticket: 1, Profit: 10.0, IsWin: true, Timestamp: time.Now()},
+		{Symbol: "XAUUSDm", StrategyTag: "VOLUME_EXPANSION_BUY", Ticket: 2, Profit: -5.0, IsWin: false, Timestamp: time.Now()},
+		{Symbol: "XAUUSDm", StrategyTag: "VOLUME_EXPANSION_BUY", Ticket: 3, Profit: 8.0, IsWin: true, Timestamp: time.Now()},
+		{Symbol: "XAUUSDm", StrategyTag: "LIQUIDITY_SWEEP_FADE_SELL", Ticket: 4, Profit: -3.0, IsWin: false, Timestamp: time.Now()},
+	}
+	for _, o := range outcomes {
+		if err := store.SaveTradeOutcome(o); err != nil {
+			t.Fatalf("unexpected error saving outcome: %v", err)
+		}
+	}
+
+	stats, err := store.WinRateByStrategy()
+	if err != nil {
+		t.Fatalf("unexpected error computing win rate: %v", err)
+	}
+	if len(stats) != 2 {
+		t.Fatalf("Expected stats for 2 distinct strategies, got %d: %+v", len(stats), stats)
+	}
+
+	byTag := make(map[string]database.WinRateStat)
+	for _, s := range stats {
+		byTag[s.StrategyTag] = s
+	}
+
+	buyStats, ok := byTag["VOLUME_EXPANSION_BUY"]
+	if !ok {
+		t.Fatal("Expected stats for VOLUME_EXPANSION_BUY")
+	}
+	if buyStats.Wins != 2 || buyStats.Losses != 1 || buyStats.TotalTrades != 3 {
+		t.Errorf("Expected 2 wins / 1 loss / 3 total for VOLUME_EXPANSION_BUY, got %+v", buyStats)
+	}
+	if buyStats.WinRate < 0.66 || buyStats.WinRate > 0.67 {
+		t.Errorf("Expected win rate ~0.667 for VOLUME_EXPANSION_BUY, got %f", buyStats.WinRate)
+	}
+	if buyStats.TotalProfit != 13.0 {
+		t.Errorf("Expected total profit 13.0 for VOLUME_EXPANSION_BUY, got %f", buyStats.TotalProfit)
+	}
+
+	sellStats, ok := byTag["LIQUIDITY_SWEEP_FADE_SELL"]
+	if !ok {
+		t.Fatal("Expected stats for LIQUIDITY_SWEEP_FADE_SELL")
+	}
+	if sellStats.Wins != 0 || sellStats.Losses != 1 || sellStats.WinRate != 0 {
+		t.Errorf("Expected 0 wins / 1 loss / 0%% win rate for LIQUIDITY_SWEEP_FADE_SELL, got %+v", sellStats)
 	}
 }

@@ -10,19 +10,25 @@ import (
 // VolumeExpansionStrategy ยิง signal เมื่อราคาเบี่ยงจากค่าเฉลี่ยแรง (Z-Score) พร้อม
 // Volume ที่พุ่งขึ้นเร็วและราคาขยับไปทางเดียวกัน — ใช้ Volume แทน Open Interest
 // เพราะโบรกเกอร์ CFD ส่วนใหญ่ (รวม Exness) ไม่มีข้อมูล Open Interest จริงให้
+//
+// minLongTermTrendSlope เป็น Dual-Window Trend Filter (ทางเลือก, 0 = ปิด):
+// ถ้าตั้งไว้ จะยิง signal เฉพาะทิศทางที่สอดคล้องกับ trend ของ window ยาว
+// (เทรดตามทิศทางใหญ่ ไม่สวนกระแส)
 type VolumeExpansionStrategy struct {
-	id                string
-	targetZScore      float64
-	minVolumeVelocity float64
-	minPriceVel       float64
+	id                    string
+	targetZScore          float64
+	minVolumeVelocity     float64
+	minPriceVel           float64
+	minLongTermTrendSlope float64
 }
 
-func NewVolumeExpansionStrategy(id string, targetZscore, minVolumeVelocity, minPriceVel float64) *VolumeExpansionStrategy {
+func NewVolumeExpansionStrategy(id string, targetZscore, minVolumeVelocity, minPriceVel, minLongTermTrendSlope float64) *VolumeExpansionStrategy {
 	return &VolumeExpansionStrategy{
-		id:                id,
-		targetZScore:      targetZscore,
-		minVolumeVelocity: minVolumeVelocity,
-		minPriceVel:       minPriceVel,
+		id:                    id,
+		targetZScore:          targetZscore,
+		minVolumeVelocity:     minVolumeVelocity,
+		minPriceVel:           minPriceVel,
+		minLongTermTrendSlope: minLongTermTrendSlope,
 	}
 }
 
@@ -35,7 +41,8 @@ func (s *VolumeExpansionStrategy) OnTick(tick domain.Tick, metrics domain.TickMe
 	if metrics.ZScore >= s.targetZScore &&
 		metrics.VolumeDelta > 0 &&
 		metrics.VolumeVelocity >= s.minVolumeVelocity &&
-		metrics.PriceVelocity >= s.minPriceVel {
+		metrics.PriceVelocity >= s.minPriceVel &&
+		s.longTermTrendAllows(metrics.LongTermTrendSlope, true) {
 		return &domain.OrderSignal{
 			Symbol:    tick.Symbol,
 			Action:    domain.SignalAction(domain.ActionBuy),
@@ -46,7 +53,11 @@ func (s *VolumeExpansionStrategy) OnTick(tick domain.Tick, metrics domain.TickMe
 	}
 
 	// Bearish Volume Expansion: Z-Score ร่วงทะลุ + Volume ไหลเข้า (Short Expansion) + ราคาดิ่งลง
-	if metrics.ZScore <= -s.targetZScore && metrics.VolumeDelta > 0 && metrics.VolumeVelocity >= s.minVolumeVelocity && metrics.PriceVelocity <= -s.minPriceVel {
+	if metrics.ZScore <= -s.targetZScore &&
+		metrics.VolumeDelta > 0 &&
+		metrics.VolumeVelocity >= s.minVolumeVelocity &&
+		metrics.PriceVelocity <= -s.minPriceVel &&
+		s.longTermTrendAllows(metrics.LongTermTrendSlope, false) {
 		return &domain.OrderSignal{
 			Symbol:    tick.Symbol,
 			Action:    domain.SignalAction(domain.ActionSell),
@@ -57,4 +68,16 @@ func (s *VolumeExpansionStrategy) OnTick(tick domain.Tick, metrics domain.TickMe
 	}
 
 	return nil
+}
+
+// longTermTrendAllows เช็คว่าทิศทางที่จะเทรด (wantBuy) สอดคล้องกับ trend ของ
+// window ยาวไหม — ถ้า minLongTermTrendSlope <= 0 ถือว่าปิดการเช็คนี้ (อนุญาตเสมอ)
+func (s *VolumeExpansionStrategy) longTermTrendAllows(longTermSlope float64, wantBuy bool) bool {
+	if s.minLongTermTrendSlope <= 0 {
+		return true
+	}
+	if wantBuy {
+		return longTermSlope >= s.minLongTermTrendSlope
+	}
+	return longTermSlope <= -s.minLongTermTrendSlope
 }

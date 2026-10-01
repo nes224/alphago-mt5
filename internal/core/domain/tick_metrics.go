@@ -3,17 +3,22 @@ package domain
 import "time"
 
 type TickMetrics struct {
-	Symbol     string  `json:"symbol"`
-	Price      float64 `json:"price"`
-	Mean       float64 `json:"mean"`
-	StdDev     float64 `json:"std_dev"`
-	ZScore     float64 `json:"z_score"`
-	TrendSlope float64 `json:"trend_slope"` // Least-squares slope ของราคาใน Rolling Window: |ชัน| สูง = กำลัง Trend, ใกล้ 0 = Sideway
+	Symbol             string  `json:"symbol"`
+	Price              float64 `json:"price"`
+	Mean               float64 `json:"mean"`
+	StdDev             float64 `json:"std_dev"`
+	ZScore             float64 `json:"z_score"`
+	TrendSlope         float64 `json:"trend_slope"`           // Least-squares slope ของราคาใน Rolling Window สั้น (WindowSize tick): |ชัน| สูง = กำลัง Trend, ใกล้ 0 = Sideway
+	LongTermTrendSlope float64 `json:"long_term_trend_slope"` // Slope เดียวกันแต่คำนวณจาก Window ยาวกว่ามาก (proxy "higher timeframe") ใช้กรองทิศทางให้เข้าทางเดียวกับ trend ใหญ่
 
 	Bid         float64 `json:"bid"`
 	Ask         float64 `json:"ask"`
 	Spread      float64 `json:"spread"`
 	SpreadDelta float64 `json:"spread_delta"`
+
+	DailyOpen float64 `json:"daily_open"` // ราคาเปิดของวัน (mid price ของ tick แรกที่เห็นวันนั้น) รีเซ็ตตามวันที่ปฏิทิน
+	DailyHigh float64 `json:"daily_high"`
+	DailyLow  float64 `json:"daily_low"`
 
 	OpenInterest   int64   `json:"open_interest"`
 	OIDelta        int64   `json:"oi_delta"`        // ผลต่าง OI เทียบกับ Tick ก่อนหน้า (OI_t - OI_{t-1}) — โบรกเกอร์ CFD ส่วนใหญ่ (รวม Exness) ไม่ส่งค่านี้มาจริง จะเป็น 0 เสมอ

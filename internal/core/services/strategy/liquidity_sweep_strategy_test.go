@@ -23,7 +23,7 @@ func warmUpFlatRange(s *strategy.LiquiditySweepStrategy, symbol string, ask, bid
 }
 
 func TestLiquiditySweepStrategy_BullishSweep_SweepLow_FiresBuy(t *testing.T) {
-	s := strategy.NewLiquiditySweepStrategy("LIQUIDITY_SWEEP_TEST", "XAUUSDm", 5, testTrendSlopeThreshold)
+	s := strategy.NewLiquiditySweepStrategy("LIQUIDITY_SWEEP_TEST", "XAUUSDm", 5, testTrendSlopeThreshold, 0)
 	warmUpFlatRange(s, "XAUUSDm", 2601.00, 2600.80, 5)
 
 	sweepLowTick := domain.Tick{Symbol: "XAUUSDm", Ask: 2596.00, Bid: 2595.80, Timestamp: time.Now()}
@@ -41,7 +41,7 @@ func TestLiquiditySweepStrategy_BullishSweep_SweepLow_FiresBuy(t *testing.T) {
 }
 
 func TestLiquiditySweepStrategy_BearishSweep_SweepHigh_FiresSell(t *testing.T) {
-	s := strategy.NewLiquiditySweepStrategy("LIQUIDITY_SWEEP_TEST", "XAUUSDm", 5, testTrendSlopeThreshold)
+	s := strategy.NewLiquiditySweepStrategy("LIQUIDITY_SWEEP_TEST", "XAUUSDm", 5, testTrendSlopeThreshold, 0)
 	warmUpFlatRange(s, "XAUUSDm", 2603.00, 2602.80, 5)
 
 	sweepHighTick := domain.Tick{Symbol: "XAUUSDm", Ask: 2607.00, Bid: 2606.80, Timestamp: time.Now()}
@@ -59,7 +59,7 @@ func TestLiquiditySweepStrategy_BearishSweep_SweepHigh_FiresSell(t *testing.T) {
 }
 
 func TestLiquiditySweepStrategy_NoSweep_ReturnsNil(t *testing.T) {
-	s := strategy.NewLiquiditySweepStrategy("LIQUIDITY_SWEEP_TEST", "XAUUSDm", 5, testTrendSlopeThreshold)
+	s := strategy.NewLiquiditySweepStrategy("LIQUIDITY_SWEEP_TEST", "XAUUSDm", 5, testTrendSlopeThreshold, 0)
 	warmUpFlatRange(s, "XAUUSDm", 2603.00, 2602.80, 5)
 
 	// Stays well inside the warmed-up [2602.80, 2603.00] range -> no sweep.
@@ -70,7 +70,7 @@ func TestLiquiditySweepStrategy_NoSweep_ReturnsNil(t *testing.T) {
 }
 
 func TestLiquiditySweepStrategy_SymbolMismatch_ReturnsNil(t *testing.T) {
-	s := strategy.NewLiquiditySweepStrategy("LIQUIDITY_SWEEP_TEST", "XAUUSDm", 5, testTrendSlopeThreshold)
+	s := strategy.NewLiquiditySweepStrategy("LIQUIDITY_SWEEP_TEST", "XAUUSDm", 5, testTrendSlopeThreshold, 0)
 	warmUpFlatRange(s, "XAUUSDm", 2603.00, 2602.80, 5)
 
 	// Would be a clear High sweep for XAUUSDm, but this tick is for a different symbol.
@@ -88,7 +88,7 @@ func TestLiquiditySweepStrategy_QuantEngineIntegration(t *testing.T) {
 	defer cancel()
 
 	engine := strategy.NewQuantEngine(100, 5)
-	sweepStrategy := strategy.NewLiquiditySweepStrategy("LIQUIDITY_SWEEP_TEST", "XAUUSDm", 5, testTrendSlopeThreshold)
+	sweepStrategy := strategy.NewLiquiditySweepStrategy("LIQUIDITY_SWEEP_TEST", "XAUUSDm", 5, testTrendSlopeThreshold, 0)
 	engine.RegisterStrategy(sweepStrategy)
 
 	engine.Start(ctx)
@@ -125,7 +125,7 @@ func TestLiquiditySweepStrategy_QuantEngineIntegration(t *testing.T) {
 }
 
 func TestLiquiditySweepStrategy_TrendingMarket_SuppressesFadeSignal(t *testing.T) {
-	s := strategy.NewLiquiditySweepStrategy("LIQUIDITY_SWEEP_TEST", "XAUUSDm", 5, testTrendSlopeThreshold)
+	s := strategy.NewLiquiditySweepStrategy("LIQUIDITY_SWEEP_TEST", "XAUUSDm", 5, testTrendSlopeThreshold, 0)
 	warmUpFlatRange(s, "XAUUSDm", 2603.00, 2602.80, 5)
 
 	// A genuine High sweep, but the engine reports a steep trend (|slope| >= threshold).
