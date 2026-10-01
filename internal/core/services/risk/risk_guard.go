@@ -295,6 +295,18 @@ func (rg *RiskGuard) ResyncPositions(symbolCounts map[string]int) {
 	rg.persist(state)
 }
 
+// UpdateConfig เปลี่ยน risk policy แบบ live (ไม่ต้อง restart service) — เรียก
+// จาก RiskConfigService ตอน PUT /api/v1/risk/config ผ่าน validation แล้ว
+// MaxConsecutiveLosses ไม่ได้อยู่ใน RiskConfig ของผู้ใช้ (ยังคงเป็นค่าคงที่ใน
+// main.go) เลยไม่แตะตรงนี้
+func (rg *RiskGuard) UpdateConfig(maxDailyLossPercent float64, maxOpenPositions int, maxSpreadPips float64) {
+	rg.mu.Lock()
+	rg.config.MaxDailyLossPercent = maxDailyLossPercent
+	rg.config.MaxOpenPositions = maxOpenPositions
+	rg.config.MaxSpreadPips = maxSpreadPips
+	rg.mu.Unlock()
+}
+
 // checkDailyResetLocked ต้องเรียกตอนถือ rg.mu อยู่แล้วเท่านั้น คืน true ถ้ามีการ reset จริง
 func (rg *RiskGuard) checkDailyResetLocked() bool {
 	today := time.Now().Format("2006-01-02")
