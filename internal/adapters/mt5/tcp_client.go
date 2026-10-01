@@ -43,10 +43,10 @@ func (a *TCPAdapter) connect() error {
 	return nil
 }
 
-func (a *TCPAdapter) SendOrder(ctx context.Context, req domain.TradeRequest) (*domain.TradeResponse, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
+// sendAndReceive เขียน payload (JSON + \n) ลง command socket แล้วอ่าน response
+// บรรทัดเดียวกลับมา — ใช้ร่วมกันทั้ง SendOrder และ GetAccountInfo เพราะ EA
+// คุยผ่าน protocol เดียวกันหมด (JSON line-in, JSON line-out) ไม่ว่า action ไหน
+func (a *TCPAdapter) sendAndReceive(ctx context.Context, payload []byte) ([]byte, error) {
 	if err := a.connect(); err != nil {
 		return nil, err
 	}
@@ -56,12 +56,6 @@ func (a *TCPAdapter) SendOrder(ctx context.Context, req domain.TradeRequest) (*d
 		deadline = time.Now().Add(a.timeout)
 	}
 	_ = a.conn.SetDeadline(deadline)
-
-	payload, err := json.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal trade request: %w", err)
-	}
-	payload = append(payload, '\n')
 
 	if _, err := a.conn.Write(payload); err != nil {
 		a.closeConn()
@@ -75,12 +69,53 @@ func (a *TCPAdapter) SendOrder(ctx context.Context, req domain.TradeRequest) (*d
 		return nil, fmt.Errorf("failed to read response from MT5: %w", err)
 	}
 
+	return respBytes, nil
+}
+
+func (a *TCPAdapter) SendOrder(ctx context.Context, req domain.TradeRequest) (*domain.TradeResponse, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal trade request: %w", err)
+	}
+	payload = append(payload, '\n')
+
+	respBytes, err := a.sendAndReceive(ctx, payload)
+	if err != nil {
+		return nil, err
+	}
+
 	var resp domain.TradeResponse
 	if err := json.Unmarshal(respBytes, &resp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal MT5 response: %w", err)
 	}
 
 	return &resp, nil
+}
+
+// GetAccountInfo ขอข้อมูลบัญชีสดจาก MT5 (balance, equity, account type, symbol
+// ที่เทรดได้จริงตอนนี้) ผ่าน command socket เดียวกับ SendOrder — ใช้แทนการอ่าน
+// ACCOUNT_BALANCE จาก app.env ตอน seed ครั้งแรก (ดู cmd/app/main.go)
+func (a *TCPAdapter) GetAccountInfo(ctx context.Context) (*domain.AccountInfo, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	respBytes, err := a.sendAndReceive(ctx, []byte("{\"action\":\"ACCOUNT_INFO\"}\n"))
+	if err != nil {
+		return nil, err
+	}
+
+	var info domain.AccountInfo
+	if err := json.Unmarshal(respBytes, &info); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal MT5 account info response: %w", err)
+	}
+	if !info.IsSuccess() {
+		return nil, fmt.Errorf("MT5 returned non-success status for account info: %s", info.Status)
+	}
+
+	return &info, nil
 }
 
 func (a *TCPAdapter) closeConn() {

@@ -13,8 +13,9 @@ import (
 )
 
 type MockMT5Adapter struct {
-	SendOrderFunc func(ctx context.Context, req domain.TradeRequest) (*domain.TradeResponse, error)
-	CloseFunc     func() error
+	SendOrderFunc      func(ctx context.Context, req domain.TradeRequest) (*domain.TradeResponse, error)
+	GetAccountInfoFunc func(ctx context.Context) (*domain.AccountInfo, error)
+	CloseFunc          func() error
 }
 
 func (m *MockMT5Adapter) SendOrder(ctx context.Context, req domain.TradeRequest) (*domain.TradeResponse, error) {
@@ -23,6 +24,14 @@ func (m *MockMT5Adapter) SendOrder(ctx context.Context, req domain.TradeRequest)
 	}
 
 	return &domain.TradeResponse{Status: "SUCCESS", Ticket: 100001, Message: "Success"}, nil
+}
+
+func (m *MockMT5Adapter) GetAccountInfo(ctx context.Context) (*domain.AccountInfo, error) {
+	if m.GetAccountInfoFunc != nil {
+		return m.GetAccountInfoFunc(ctx)
+	}
+
+	return &domain.AccountInfo{Status: "SUCCESS", Balance: 1000.0, Equity: 1000.0, Currency: "USD", AccountType: "DEMO"}, nil
 }
 
 func (m *MockMT5Adapter) Close() error {
@@ -133,7 +142,7 @@ func TestTradeService_ExecuteTrade_Success(t *testing.T) {
 	mockAdapter := &MockMT5Adapter{
 		SendOrderFunc: func(ctx context.Context, req domain.TradeRequest) (*domain.TradeResponse, error) {
 			return &domain.TradeResponse{
-				Status:   "SUCCESS",
+				Status:    "SUCCESS",
 				Ticket:    99999,
 				Price:     1.0850,
 				Message:   "Order Executed",

@@ -39,30 +39,57 @@ func (s *Store) LoadRiskState() (risk.PersistedState, bool, error) {
 		return risk.PersistedState{}, false, fmt.Errorf("load risk guard state: %w", err)
 	}
 
+	var symbolRows []OpenPositionSymbolModel
+	if err := s.db.Find(&symbolRows).Error; err != nil {
+		return risk.PersistedState{}, false, fmt.Errorf("load open position symbols: %w", err)
+	}
+	symbols := make(map[string]int, len(symbolRows))
+	for _, row := range symbolRows {
+		symbols[row.Symbol] = row.Count
+	}
+
 	return risk.PersistedState{
 		StartingDailyEquity: m.StartingDailyEquity,
 		CurrentDailyEquity:  m.CurrentDailyEquity,
 		OpenPositionsCount:  m.OpenPositionsCount,
+		OpenPositionSymbols: symbols,
 		ConsecutiveLosses:   m.ConsecutiveLosses,
 		IsCircuitTripped:    m.IsCircuitTripped,
 		LastResetDate:       m.LastResetDate,
 	}, true, nil
 }
 
+// SaveRiskState เขียน RiskGuardStateModel และ sync ตาราง open_position_symbols
+// ให้ตรงกับ state.OpenPositionSymbols ทั้งหมดในทรานแซคชันเดียว (ลบของเก่าทิ้ง
+// แล้วเขียนใหม่ทั้งหมด — ตารางเล็กมาก แค่ไม่กี่ symbol ไม่คุ้มจะ diff)
 func (s *Store) SaveRiskState(state risk.PersistedState) error {
-	m := RiskGuardStateModel{
-		ID:                  singleRowID,
-		StartingDailyEquity: state.StartingDailyEquity,
-		CurrentDailyEquity:  state.CurrentDailyEquity,
-		OpenPositionsCount:  state.OpenPositionsCount,
-		ConsecutiveLosses:   state.ConsecutiveLosses,
-		IsCircuitTripped:    state.IsCircuitTripped,
-		LastResetDate:       state.LastResetDate,
-	}
-	if err := s.db.Save(&m).Error; err != nil {
-		return fmt.Errorf("save risk guard state: %w", err)
-	}
-	return nil
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		m := RiskGuardStateModel{
+			ID:                  singleRowID,
+			StartingDailyEquity: state.StartingDailyEquity,
+			CurrentDailyEquity:  state.CurrentDailyEquity,
+			OpenPositionsCount:  state.OpenPositionsCount,
+			ConsecutiveLosses:   state.ConsecutiveLosses,
+			IsCircuitTripped:    state.IsCircuitTripped,
+			LastResetDate:       state.LastResetDate,
+		}
+		if err := tx.Save(&m).Error; err != nil {
+			return fmt.Errorf("save risk guard state: %w", err)
+		}
+
+		if err := tx.Where("1 = 1").Delete(&OpenPositionSymbolModel{}).Error; err != nil {
+			return fmt.Errorf("clear open position symbols: %w", err)
+		}
+		for symbol, count := range state.OpenPositionSymbols {
+			if count <= 0 {
+				continue
+			}
+			if err := tx.Create(&OpenPositionSymbolModel{Symbol: symbol, Count: count}).Error; err != nil {
+				return fmt.Errorf("save open position symbol %s: %w", symbol, err)
+			}
+		}
+		return nil
+	})
 }
 
 // --- pipeline.SignalStore ---
@@ -158,6 +185,143 @@ func (s *Store) SaveTradeOutcome(o TradeOutcome) error {
 		return fmt.Errorf("save trade outcome: %w", err)
 	}
 	return nil
+}
+
+// --- Pending Attributions (ticket -> signal Reason, แทนที่ ticketToReason sync.Map) ---
+
+// SaveAttribution บันทึกว่า ticket นี้เกิดจาก signal Reason ไหน — เรียกทันทีหลัง
+// dispatch order สำเร็จและได้ ticket กลับมาจาก MT5
+func (s *Store) SaveAttribution(ticket uint64, reason string) error {
+	m := PendingAttributionModel{Ticket: ticket, Reason: reason, CreatedAt: time.Now()}
+	if err := s.db.Create(&m).Error; err != nil {
+		return fmt.Errorf("save pending attribution: %w", err)
+	}
+	return nil
+}
+
+// LoadAndDeleteAttribution อ่าน Reason ของ ticket นี้แล้วลบทิ้งทันที (ใช้ครั้ง
+// เดียวตอน trade_closed event มาถึง) คืน ok=false ถ้าไม่เคยบันทึกไว้ (เช่น
+// service restart ระหว่าง position ยังเปิดค้างอยู่)
+func (s *Store) LoadAndDeleteAttribution(ticket uint64) (string, bool, error) {
+	var m PendingAttributionModel
+	err := s.db.First(&m, ticket).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("load pending attribution: %w", err)
+	}
+
+	if err := s.db.Delete(&PendingAttributionModel{}, ticket).Error; err != nil {
+		return "", false, fmt.Errorf("delete pending attribution: %w", err)
+	}
+	return m.Reason, true, nil
+}
+
+// --- Pending Orders (Outbox pattern) ---
+
+var _ pipeline.OutboxStore = (*Store)(nil)
+
+// CreatePendingOrder เขียนแถว PENDING ก่อนจริงๆ จะยิง order เข้า MT5 — ถ้า
+// service crash ระหว่างตัดสินใจส่งกับส่งจริง แถวนี้จะยังค้างเป็น PENDING ให้
+// ตรวจเจอตอน restart แทนที่จะหายไปเงียบๆ
+func (s *Store) CreatePendingOrder(order pipeline.PendingOrder) (uint, error) {
+	m := PendingOrderModel{
+		Symbol:     order.Symbol,
+		Action:     order.Action,
+		LotSize:    order.LotSize,
+		StopLoss:   order.StopLoss,
+		TakeProfit: order.TakeProfit,
+		Reason:     order.Reason,
+		Status:     PendingOrderStatusPending,
+	}
+	if err := s.db.Create(&m).Error; err != nil {
+		return 0, fmt.Errorf("create pending order: %w", err)
+	}
+	return m.ID, nil
+}
+
+// MarkOrderOutcome อัปเดตแถว Outbox หลังรู้ผลจริงจาก MT5 — status เป็น SENT
+// (มี ticket), FAILED (broker ปฏิเสธชัดเจน) หรือ UNKNOWN (error จาก transport
+// เอง เช่น timeout/EOF — ไม่รู้ว่าเข้าตลาดจริงไหม ต้องเช็คมือ)
+func (s *Store) MarkOrderOutcome(id uint, status string, ticket uint64, errMsg string) error {
+	updates := map[string]any{
+		"status":        status,
+		"ticket":        ticket,
+		"error_message": errMsg,
+	}
+	if err := s.db.Model(&PendingOrderModel{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+		return fmt.Errorf("update pending order outcome: %w", err)
+	}
+	return nil
+}
+
+// PendingOrderRecord is a JSON-friendly view of a PendingOrderModel row for
+// monitoring (GET /api/v1/pending-orders).
+type PendingOrderRecord struct {
+	ID           uint      `json:"id"`
+	Symbol       string    `json:"symbol"`
+	Action       string    `json:"action"`
+	LotSize      float64   `json:"lot_size"`
+	Reason       string    `json:"reason"`
+	Status       string    `json:"status"`
+	Ticket       uint64    `json:"ticket,omitempty"`
+	ErrorMessage string    `json:"error_message,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// PendingOrders คืน order ล่าสุด (ทุก status) เรียงใหม่สุดก่อน — ใช้ตรวจ order
+// ที่ค้างเป็น PENDING/UNKNOWN จาก crash หรือ transport error ก่อนหน้า
+func (s *Store) PendingOrders(limit int) ([]PendingOrderRecord, error) {
+	var rows []PendingOrderModel
+	if err := s.db.Order("created_at DESC").Limit(limit).Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("list pending orders: %w", err)
+	}
+
+	out := make([]PendingOrderRecord, len(rows))
+	for i, m := range rows {
+		out[i] = PendingOrderRecord{
+			ID:           m.ID,
+			Symbol:       m.Symbol,
+			Action:       m.Action,
+			LotSize:      m.LotSize,
+			Reason:       m.Reason,
+			Status:       m.Status,
+			Ticket:       m.Ticket,
+			ErrorMessage: m.ErrorMessage,
+			CreatedAt:    m.CreatedAt,
+			UpdatedAt:    m.UpdatedAt,
+		}
+	}
+	return out, nil
+}
+
+// UnresolvedPendingOrders คืนเฉพาะแถวที่ยังไม่รู้ผลชัดเจน (PENDING ค้างจาก
+// crash หรือ UNKNOWN จาก transport error) — ใช้ log เตือนตอน startup
+func (s *Store) UnresolvedPendingOrders() ([]PendingOrderRecord, error) {
+	var rows []PendingOrderModel
+	if err := s.db.Where("status IN ?", []string{PendingOrderStatusPending, PendingOrderStatusUnknown}).
+		Order("created_at ASC").Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("list unresolved pending orders: %w", err)
+	}
+
+	out := make([]PendingOrderRecord, len(rows))
+	for i, m := range rows {
+		out[i] = PendingOrderRecord{
+			ID:           m.ID,
+			Symbol:       m.Symbol,
+			Action:       m.Action,
+			LotSize:      m.LotSize,
+			Reason:       m.Reason,
+			Status:       m.Status,
+			Ticket:       m.Ticket,
+			ErrorMessage: m.ErrorMessage,
+			CreatedAt:    m.CreatedAt,
+			UpdatedAt:    m.UpdatedAt,
+		}
+	}
+	return out, nil
 }
 
 // WinRateStat สรุปสถิติแพ้/ชนะสะสมของแต่ละ strategy (แยกตาม StrategyTag)

@@ -33,6 +33,7 @@ type PersistedState struct {
 	StartingDailyEquity float64
 	CurrentDailyEquity  float64
 	OpenPositionsCount  int
+	OpenPositionSymbols map[string]int // symbol -> จำนวน position ที่เปิดอยู่ (กันลืมตอน restart ว่ามี position ค้างที่ symbol ไหน)
 	ConsecutiveLosses   int
 	IsCircuitTripped    bool
 	LastResetDate       string
@@ -85,6 +86,9 @@ func (rg *RiskGuard) AttachStore(store StateStore) error {
 		rg.startingDailyEquity = state.StartingDailyEquity
 		rg.currentDailyEquity = state.CurrentDailyEquity
 		rg.openPositionsCount = state.OpenPositionsCount
+		if len(state.OpenPositionSymbols) > 0 {
+			rg.openPositionSymbols = state.OpenPositionSymbols
+		}
 		rg.consecutiveLosses = state.ConsecutiveLosses
 		rg.isCircuitTripped = state.IsCircuitTripped
 		rg.lastResetDate = state.LastResetDate
@@ -189,21 +193,28 @@ func (rg *RiskGuard) CheckCircuitBreaker() error {
 
 // RiskGuardStatus เป็น snapshot ของสถานะ RiskGuard ปัจจุบัน สำหรับ monitoring/API
 type RiskGuardStatus struct {
-	CircuitTripped      bool    `json:"circuit_tripped"`
-	ConsecutiveLosses   int     `json:"consecutive_losses"`
-	OpenPositionsCount  int     `json:"open_positions_count"`
-	StartingDailyEquity float64 `json:"starting_daily_equity"`
-	CurrentDailyEquity  float64 `json:"current_daily_equity"`
+	CircuitTripped      bool           `json:"circuit_tripped"`
+	ConsecutiveLosses   int            `json:"consecutive_losses"`
+	OpenPositionsCount  int            `json:"open_positions_count"`
+	OpenPositionSymbols map[string]int `json:"open_position_symbols"` // เปิดเผยตรงๆ กันเดาไม่ออกว่า count มาจาก symbol ไหนตอน debug (เคสนี้เจอจริงเมื่อ 2026-10-01 — count ค้างที่ 5 ทั้งที่ MT5 มี 1)
+	StartingDailyEquity float64        `json:"starting_daily_equity"`
+	CurrentDailyEquity  float64        `json:"current_daily_equity"`
 }
 
 func (rg *RiskGuard) Status() RiskGuardStatus {
 	rg.mu.RLock()
 	defer rg.mu.RUnlock()
 
+	symbols := make(map[string]int, len(rg.openPositionSymbols))
+	for symbol, count := range rg.openPositionSymbols {
+		symbols[symbol] = count
+	}
+
 	return RiskGuardStatus{
 		CircuitTripped:      rg.isCircuitTripped,
 		ConsecutiveLosses:   rg.consecutiveLosses,
 		OpenPositionsCount:  rg.openPositionsCount,
+		OpenPositionSymbols: symbols,
 		StartingDailyEquity: rg.startingDailyEquity,
 		CurrentDailyEquity:  rg.currentDailyEquity,
 	}
@@ -259,6 +270,31 @@ func (rg *RiskGuard) ResetCircuitBreaker() {
 	rg.persist(state)
 }
 
+// ResyncPositions เขียนทับ openPositionSymbols และ openPositionsCount (รวม
+// จาก symbolCounts ทั้งหมด) แบบตรงๆ ไม่ merge กับค่าเดิม — ใช้กู้สถานะตอนที่
+// internal tracking เพี้ยนไปจาก MT5 จริง (เช่น service restart ระหว่าง
+// position เปิดค้างก่อนที่ openPositionSymbols จะถูก persist ได้ — ดู HANDOFF)
+// ไม่ต้อง restart service, มีผลทันทีและ persist เข้า DB เลย
+func (rg *RiskGuard) ResyncPositions(symbolCounts map[string]int) {
+	symbols := make(map[string]int, len(symbolCounts))
+	total := 0
+	for symbol, count := range symbolCounts {
+		if count <= 0 {
+			continue
+		}
+		symbols[symbol] = count
+		total += count
+	}
+
+	rg.mu.Lock()
+	rg.openPositionSymbols = symbols
+	rg.openPositionsCount = total
+	state := rg.snapshotLocked()
+	rg.mu.Unlock()
+
+	rg.persist(state)
+}
+
 // checkDailyResetLocked ต้องเรียกตอนถือ rg.mu อยู่แล้วเท่านั้น คืน true ถ้ามีการ reset จริง
 func (rg *RiskGuard) checkDailyResetLocked() bool {
 	today := time.Now().Format("2006-01-02")
@@ -272,12 +308,20 @@ func (rg *RiskGuard) checkDailyResetLocked() bool {
 	return false
 }
 
-// snapshotLocked ต้องเรียกตอนถือ rg.mu อยู่แล้วเท่านั้น
+// snapshotLocked ต้องเรียกตอนถือ rg.mu อยู่แล้วเท่านั้น — คัดลอก
+// openPositionSymbols ออกมาเป็น map ใหม่ เพราะ persist() ทำงานหลัง unlock แล้ว
+// ห้ามส่ง map ภายในตรงๆ ออกไปให้ goroutine อื่นอ่านพร้อมกับที่ RiskGuard เขียนต่อ
 func (rg *RiskGuard) snapshotLocked() PersistedState {
+	symbols := make(map[string]int, len(rg.openPositionSymbols))
+	for symbol, count := range rg.openPositionSymbols {
+		symbols[symbol] = count
+	}
+
 	return PersistedState{
 		StartingDailyEquity: rg.startingDailyEquity,
 		CurrentDailyEquity:  rg.currentDailyEquity,
 		OpenPositionsCount:  rg.openPositionsCount,
+		OpenPositionSymbols: symbols,
 		ConsecutiveLosses:   rg.consecutiveLosses,
 		IsCircuitTripped:    rg.isCircuitTripped,
 		LastResetDate:       rg.lastResetDate,

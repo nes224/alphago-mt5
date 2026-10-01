@@ -86,3 +86,40 @@ func TestRiskGuard_ValidateOrder_BlocksOppositeSignalWhilePositionOpen(t *testin
 		t.Errorf("Expected order to pass after position closed, got error: %v", err)
 	}
 }
+
+// TestRiskGuard_ResyncPositions_FixesStuckCount reproduces the live bug found
+// 2026-10-01: openPositionsCount drifted to 5 (blocking every new signal)
+// while MT5 actually had only 1 real open position — this happened because
+// openPositionSymbols used to be RAM-only and reset to empty on every
+// restart, while the persisted scalar count kept accumulating across those
+// restarts without ever being decremented back down.
+func TestRiskGuard_ResyncPositions_FixesStuckCount(t *testing.T) {
+	cfg := risk.RiskGuardConfig{MaxDailyLossPercent: 0.05, MaxOpenPositions: 5, MaxSpreadPips: 5.0}
+	guard := risk.NewRiskGuard(cfg, 10000.0)
+	metrics := domain.TickMetrics{Spread: 0.30}
+	order := risk.PreparedOrder{Symbol: "XAUUSDm", Action: domain.SignalAction(domain.ActionBuy)}
+
+	// Simulate the stuck state: count says 5, but reality (MT5) has only 1.
+	for i := 0; i < 5; i++ {
+		guard.MarkPositionOpened("XAUUSDm")
+	}
+	if err := guard.ValidateOrder(order, metrics); !errors.Is(err, risk.ErrMaxPositionsReached) {
+		t.Fatalf("Expected ErrMaxPositionsReached before resync, got: %v", err)
+	}
+
+	guard.ResyncPositions(map[string]int{"XAUUSDm": 1})
+
+	status := guard.Status()
+	if status.OpenPositionsCount != 1 {
+		t.Errorf("Expected OpenPositionsCount=1 after resync, got %d", status.OpenPositionsCount)
+	}
+	if status.OpenPositionSymbols["XAUUSDm"] != 1 {
+		t.Errorf("Expected OpenPositionSymbols[XAUUSDm]=1 after resync, got %+v", status.OpenPositionSymbols)
+	}
+
+	// New signals on a different symbol must now pass sizing/count checks
+	// again (same symbol is still correctly blocked, per the 1 open position).
+	if err := guard.ValidateOrder(risk.PreparedOrder{Symbol: "EURUSD", Action: domain.SignalAction(domain.ActionBuy)}, metrics); err != nil {
+		t.Errorf("Expected order on a different symbol to pass after resync, got error: %v", err)
+	}
+}

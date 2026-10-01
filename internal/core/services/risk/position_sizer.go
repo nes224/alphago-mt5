@@ -35,6 +35,7 @@ type PreparedOrder struct {
 	StopLoss   float64
 	TakeProfit float64
 	Reason     string
+	OutboxID   uint // pending_orders row ID (0 ถ้าไม่มี outbox store ผูกไว้) — ให้ sender goroutine อัปเดตสถานะกลับหลังรู้ผลจริงจาก MT5
 }
 
 func (r *RiskManager) CalculateOrder(signal domain.OrderSignal, metrics domain.TickMetrics) (*PreparedOrder, error) {
