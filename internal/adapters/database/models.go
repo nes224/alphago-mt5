@@ -5,9 +5,17 @@ import "time"
 // AccountStateModel เก็บ balance ปัจจุบันของบัญชี — มีแค่แถวเดียวเสมอ (ID=1)
 // อัปเดตทุกครั้งที่ equity เปลี่ยน แทนที่การแก้ ACCOUNT_BALANCE ใน app.env มือ
 type AccountStateModel struct {
-	ID        uint `gorm:"primaryKey"`
-	Balance   float64
-	UpdatedAt time.Time
+	ID                     uint `gorm:"primaryKey"`
+	Balance                float64
+	RISK_PER_TRADE_PERCENT float64
+	MIN_LOT_SIZE           float64
+	MAX_LOT_SIZE           float64
+	MIN_SL_DISTANCE        float64
+	MAX_SL_DISTANCE        float64
+	MAX_DAILY_LOSS_PERCENT float64
+	MAX_OPEN_POSITIONS     float64
+	MAX_SPREAD_PIPS        float64
+	UpdatedAt              time.Time
 }
 
 func (AccountStateModel) TableName() string { return "account_state" }

@@ -16,11 +16,10 @@ import (
 
 	"github.com/nes224/alphago-mt5/internal/adapters/config"
 	"github.com/nes224/alphago-mt5/internal/adapters/database"
-	httphandler "github.com/nes224/alphago-mt5/internal/adapters/http"
+	v1 "github.com/nes224/alphago-mt5/internal/adapters/http/v1"
 	"github.com/nes224/alphago-mt5/internal/adapters/logging"
 	"github.com/nes224/alphago-mt5/internal/adapters/mt5"
 	"github.com/nes224/alphago-mt5/internal/core/domain"
-	"github.com/nes224/alphago-mt5/internal/core/services"
 	"github.com/nes224/alphago-mt5/internal/core/services/pipeline"
 	"github.com/nes224/alphago-mt5/internal/core/services/risk"
 	"github.com/nes224/alphago-mt5/internal/core/services/strategy"
@@ -346,11 +345,6 @@ func main() {
 		}()
 	}
 
-	// 10. Setup HTTP Services & Handlers (REST API)
-	tradeService := services.NewTradeService(mt5Adapter, riskGuard)
-	tradeHandler := httphandler.NewTradeHandler(tradeService)
-	monitorHandler := httphandler.NewMonitorHandler(quantEngine, execRouter, riskGuard, store, mt5Adapter, TradingSymbol)
-
 	r := gin.Default()
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
@@ -359,18 +353,7 @@ func main() {
 		})
 	})
 
-	v1 := r.Group("/api/v1")
-	{
-		v1.POST("/trade", tradeHandler.PlaceOrder)
-		v1.POST("/orders/close", tradeHandler.CloseOrder)
-		v1.PUT("/orders/modify", tradeHandler.ModifyOder)
-		v1.GET("/status", monitorHandler.Status)
-		v1.GET("/signals", monitorHandler.RecentSignals)
-		v1.GET("/strategy-stats", monitorHandler.StrategyStats)
-		v1.GET("/pending-orders", monitorHandler.PendingOrders)
-		v1.GET("/account-info", monitorHandler.AccountInfo)
-		v1.POST("/risk/resync-positions", monitorHandler.ResyncPositions)
-	}
+	r = v1.RouterV1(r, mt5Adapter, riskGuard, quantEngine, execRouter, store, TradingSymbol)
 
 	srv := &http.Server{
 		Addr:    ":8080",
