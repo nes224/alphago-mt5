@@ -2,12 +2,6 @@ package domain
 
 import "time"
 
-// TimeframeState is the observable state of one timeframe window inside the
-// Multi-Timeframe Confirmation filter — exposed via GET /api/v1/status so an
-// operator can watch it actually warm up live instead of trusting it
-// blindly. WarmedUp mirrors the exact condition the filter's Direction
-// check applies internally (buffered span against a fraction of the
-// window's configured duration); Direction is 0 whenever !WarmedUp.
 type TimeframeState struct {
 	Direction int           `json:"direction"`
 	Slope     float64       `json:"slope"`
@@ -15,9 +9,6 @@ type TimeframeState struct {
 	WarmedUp  bool          `json:"warmed_up"`
 }
 
-// MultiTimeframeState is the full observable state of a symbol's
-// Bias (Daily+H4) -> Confirmation (M30 or M15) pipeline for both possible
-// actions.
 type MultiTimeframeState struct {
 	Daily      TimeframeState `json:"daily"`
 	H4         TimeframeState `json:"h4"`

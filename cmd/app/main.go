@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -26,77 +25,25 @@ import (
 )
 
 const (
-	BufferCapacity = 1000
-	WindowSize     = 20
-	WorkerCount    = 4
-
-	TradingSymbol = "XAUUSDm"
-
-	MaxConsecutiveLosses = 5
-
-	// SweepWindowSize นับเป็นจำนวน tick ไม่ใช่เวลา — 20 tick แคบเกินไปมากบน
-	// tick สดจริง (ราคาแทบทุก tick ทำ high/low ใหม่เทียบกับ 20 tick ล่าสุด
-	// อยู่แล้วโดยธรรมชาติ ไม่ใช่การกวาด stop จริง) ขยับขึ้นมาก แต่ก็ยังเป็น
-	// ค่าประมาณ ต้องดู tick rate จริงแล้วปรับอีกที
-	SweepWindowSize = 300
-	// SweepTrendSlopeThreshold เป็นค่าเริ่มต้นแบบหยาบ ยังไม่ได้ผ่าน backtest —
-	// ปรับตามพฤติกรรมราคาจริงของ TradingSymbol ทีหลัง
-	SweepTrendSlopeThreshold = 5.0
-
-	// LongTermWindowSize คือ Dual-Window Trend Filter — window ที่ยาวกว่า
-	// WindowSize (20 tick) มาก ใช้เป็น proxy "higher timeframe" โดยไม่ต้อง
-	// สร้าง candle aggregator จริง ยังเป็นค่าประมาณ ต้องดู tick rate จริงก่อนปรับ
-	LongTermWindowSize = 2000
-	// MinLongTermTrendSlope เป็น threshold ตัดสินว่า slope ของ window ยาวถือว่า
-	// "มีทิศทาง" พอจะใช้กรองหรือยัง — ปิดไว้ก่อน (0 = ปิด) เพราะค่าจริงที่วัดได้
-	// จาก /api/v1/status (~0.0009) เล็กกว่าค่าเดิมที่เดาไว้ (0.05) เกือบ 60 เท่า
-	// ทำให้ gate บล็อกทุก signal ไม่มีวันผ่านเลย — ต้องเก็บข้อมูล slope จริงช่วง
-	// ที่ตลาด trend ชัดๆ ก่อน ถึงจะตั้ง threshold ที่ใช้งานได้จริง
-	MinLongTermTrendSlope = 0
-
-	// MultiTimeframeMinSlope คือ threshold เดียวกันที่ใช้ตัดสิน "มีทิศทาง" ของ
-	// ทุกระดับใน MultiTimeframeFilter (Daily/H4/M30/M15) — ยังไม่ได้ผ่าน
-	// backtest จริงเช่นกัน เป็นค่าประมาณแบบหยาบ ต้องเก็บ slope จริงจากแต่ละ
-	// timeframe ก่อนค่อยปรับให้แม่น **แต่ต่างจาก MinLongTermTrendSlope ตรงที่
-	// filter นี้ fail-open** (ไม่มีทิศทางชัดเจน = ไม่ขวาง) ต่อให้ threshold
-	// นี้ยังเดาไม่แม่น อย่างมากก็แค่ทำงานเหมือนปิดฟีเจอร์นี้ไปเฉยๆ ไม่มีทาง
-	// บล็อก signal ทุกตัวแบบที่ MinLongTermTrendSlope เคยพังมาแล้ว
-	MultiTimeframeMinSlope = 0.001
-
-	// LiquidityMinCVDMagnitude/LiquidityMaxDistanceFromPOC คือ threshold ของ
-	// LiquidityConfluenceFilter (Order Flow/Liquidity Confluence Gate) — ยังไม่
-	// เคย backtest หรือดูข้อมูลจริงจาก /api/v1/status เลยสักครั้ง ต่างจาก
-	// threshold อื่นในไฟล์นี้ (ที่อย่างน้อยเคยเดาจาก SweepWindowSize/MinSlope
-	// มาก่อน) ค่าตรงนี้เป็นแค่ placeholder — ตั้งใจ "ไม่เรียก"
-	// quantEngine.SetLiquidityConfluenceFilter(...) ใน setupQuantEngine()
-	// ด้านล่าง จนกว่าจะเอาค่า CVD/CVDTrendSlope/POCPrice/DistanceToPOC จริงจาก
-	// /api/v1/status ไปดูสักพักก่อน (ดู LiquidityConfluenceFilter's fail-open
-	// design — เปิดก่อนเวลาอันควรเสี่ยงบล็อกสัญญาณดีๆ ทิ้งเงียบๆ)
+	BufferCapacity              = 1000
+	WindowSize                  = 20
+	WorkerCount                 = 4
+	TradingSymbol               = "XAUUSDm"
+	MaxConsecutiveLosses        = 5
+	SweepWindowSize             = 300
+	SweepTrendSlopeThreshold    = 5.0
+	LongTermWindowSize          = 2000
+	MinLongTermTrendSlope       = 0
+	MultiTimeframeMinSlope      = 0.001
 	LiquidityMinCVDMagnitude    = 100.0 // placeholder, unvalidated
 	LiquidityMaxDistanceFromPOC = 2.0   // placeholder ($, ~4 buckets ที่ $0.50/bucket), unvalidated
-
-	// SignalCooldown กันไม่ให้ QuantEngine ยิง signal ถี่เกินไปต่อ symbol
-	// ไม่ว่า threshold ของ strategy ตัวไหนจะยังไม่ได้ tune ดีแค่ไหนก็ตาม —
-	// เป็น safety net ชั้นสุดท้ายก่อนถึง Risk Guard
-	SignalCooldown = 30 * time.Second
-
-	// TickHistoryChanBuffer คือ buffer ระหว่าง consumeTicks กับ
-	// recordTickHistory — ใหญ่พอรองรับ burst ช่วงตลาดคึกคักโดยไม่ดรอป tick
-	// ทิ้งบ่อยเกินไป แต่ไม่ใหญ่จนกิน memory เกินจำเป็น
-	TickHistoryChanBuffer = 5000
-	// tickHistoryBatchSize/tickHistoryFlushInterval คุมว่า background
-	// recorder จะ insert ลง DB ทีละกี่แถว หรือทุกกี่วินาที แล้วแต่อย่างไหน
-	// ถึงก่อน — กัน insert ทีละ tick (1.7M+ แถว/วัน) ซึ่งหนักเกินจำเป็นมาก
-	tickHistoryBatchSize     = 200
-	tickHistoryFlushInterval = 2 * time.Second
-
-	// BackfillLookback คือช่วงเวลาย้อนหลังที่ดึงจาก tick_history มา replay
-	// เข้า QuantEngine ตอน startup (ดู backfillQuantEngineState) — 25 ชม. เผื่อ
-	// ไว้เกิน 24 ชม. ของ Daily TimeWindow ใน MultiTimeframeFilter เล็กน้อย
-	// เพื่อให้ span หลัง backfill เสร็จมากกว่า 24 ชม. เต็มๆ ไม่ใช่พอดีเป๊ะ —
-	// ถ้า tick_history มีข้อมูลน้อยกว่านี้ (เช่น service เพิ่งรันครั้งแรก) ก็แค่
-	// ได้เท่าที่มี ไม่ error
-	BackfillLookback = 25 * time.Hour
+	SignalCooldown              = 30 * time.Second
+	TickHistoryChanBuffer       = 5000
+	tickHistoryBatchSize        = 200
+	tickHistoryFlushInterval    = 2 * time.Second
+	BackfillLookback            = 25 * time.Hour
+	MinStrategyWinRate          = 0.50
+	MinWinRateSampleSize        = 30
 )
 
 func main() {
@@ -124,6 +71,10 @@ func main() {
 	orderSink := make(chan risk.PreparedOrder, BufferCapacity)
 	execRouter := setupExecutionRouter(quantEngine, riskManager, riskGuard, orderSink, store)
 
+	winRateGate := risk.NewWinRateGate(MinStrategyWinRate, MinWinRateSampleSize)
+	refreshWinRateGate(winRateGate, store)
+	execRouter.SetWinRateGate(winRateGate)
+
 	logUnresolvedPendingOrders(store)
 
 	quantEngine.Start(ctx)
@@ -134,15 +85,13 @@ func main() {
 	go dispatchOrders(ctx, mt5Adapter, riskGuard, store, orderSink)
 	go consumeTicks(ctx, streamAdapter, quantEngine, tickHistoryChan)
 	go recordTickHistory(ctx, tickHistoryChan, store)
-	go consumeTradeClosedEvents(ctx, streamAdapter, riskGuard, store)
+	go consumeTradeClosedEvents(ctx, streamAdapter, riskGuard, store, winRateGate)
 
 	srv := startHTTPServer(cfg, mt5Adapter, riskManager, riskGuard, quantEngine, execRouter, store)
 
 	waitForShutdown(ctx, srv)
 }
 
-// loadConfig อ่าน app.env — logger ยังไม่พร้อมใช้ตอนนี้ (ต้องมี cfg.AppEnv
-// ก่อน) เลยเขียน error ลง os.Stderr ตรงๆ แทน
 func loadConfig() config.Config {
 	cfg, err := config.LoadConfig(".")
 	if err != nil {
@@ -152,8 +101,6 @@ func loadConfig() config.Config {
 	return cfg
 }
 
-// initMT5Adapters สร้าง adapter ทั้งคู่ (Command TCP สำหรับส่ง order/ขอข้อมูล
-// บัญชี และ Market Data Stream สำหรับรับ tick/trade_closed event)
 func initMT5Adapters(cfg config.Config) (*mt5.TCPAdapter, *mt5.StreamAdapter) {
 	mt5Addr := fmt.Sprintf("%s:%d", cfg.MT5Host, cfg.MT5Port)
 	timeout := time.Duration(cfg.MT5TimeoutSeconds) * time.Second
@@ -165,10 +112,6 @@ func initMT5Adapters(cfg config.Config) (*mt5.TCPAdapter, *mt5.StreamAdapter) {
 	return mt5Adapter, streamAdapter
 }
 
-// fetchLiveAccountInfo ดึงข้อมูลบัญชีสดจาก MT5 (balance, account type, broker,
-// symbol ที่เทรดได้) — ต้องมี MT5 Terminal + EA เปิด Algo Trading อยู่แล้ว
-// ตอนนี้ ถ้าต่อไม่ได้ (เช่นยังไม่ได้ attach EA) คืน nil ให้ผู้เรียก fallback
-// ไปใช้ app.env แทน ไม่ fail การ start ทั้งระบบ
 func fetchLiveAccountInfo(ctx context.Context, mt5Adapter *mt5.TCPAdapter) *domain.AccountInfo {
 	liveAccountInfo, err := mt5Adapter.GetAccountInfo(ctx)
 	if err != nil {
@@ -192,8 +135,6 @@ func fetchLiveAccountInfo(ctx context.Context, mt5Adapter *mt5.TCPAdapter) *doma
 	return liveAccountInfo
 }
 
-// connectDatabase เปิด connection ไปยัง PostgreSQL — persist account balance /
-// risk config / risk guard state / signal history ข้าม restart
 func connectDatabase(cfg config.Config) *database.Store {
 	db, err := database.Connect(cfg.DatabaseURL)
 	if err != nil {
@@ -202,10 +143,6 @@ func connectDatabase(cfg config.Config) *database.Store {
 	return database.NewStore(db)
 }
 
-// loadOrSeedAccountBalance โหลด balance จาก DB ถ้าเคยบันทึกไว้ (run ก่อนหน้า)
-// ไม่งั้น seed ด้วย balance สดจาก MT5 (ถ้าดึงได้) หรือ ACCOUNT_BALANCE ใน
-// app.env (ถ้าดึงจาก MT5 ไม่ได้) — หลังจากนี้ DB คือ source of truth เสมอ
-// อัปเดตตาม P/L เหตุการณ์จริง ไม่อ่านจาก MT5 สดซ้ำอีก
 func loadOrSeedAccountBalance(store *database.Store, cfg config.Config, liveAccountInfo *domain.AccountInfo) float64 {
 	accountBalance, hasSavedBalance, err := store.LoadAccountBalance()
 	if err != nil {
@@ -232,19 +169,12 @@ func loadOrSeedAccountBalance(store *database.Store, cfg config.Config, liveAcco
 	return accountBalance
 }
 
-// loadOrSeedRiskConfig โหลด risk policy จาก DB ถ้าเคยตั้งผ่าน PUT
-// /api/v1/risk/config มาก่อน ไม่งั้น seed จากค่าใน app.env — ค่าที่ seed ไว้
-// ยัง "ปรับทีหลังได้โดยไม่ต้อง restart" ผ่าน endpoint เดียวกัน
 func loadOrSeedRiskConfig(store *database.Store, cfg config.Config) domain.RiskConfig {
 	riskCfg, hasSavedConfig, err := store.LoadRiskConfig()
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to load risk config from DB")
 	}
 	if hasSavedConfig {
-		// Migration safety: แถวเก่าที่บันทึกไว้ก่อนเพิ่มคอลัมน์
-		// VolatilityMultiplier (2026-10-01) จะได้ค่า 0 จาก AutoMigrate — ถ้าปล่อย
-		// ไว้ slDistance จะกลายเป็น 0 เสมอ (เทรดไม่ได้เลย) เติมจาก app.env แทน
-		// แล้วเขียนกลับ ครั้งต่อไปจะไม่เจอปัญหานี้อีก
 		if riskCfg.VolatilityMultiplier <= 0 {
 			log.Warn().Msg("⚠️ risk_config row missing VolatilityMultiplier (เก่ากว่าฟีเจอร์นี้) — เติมจาก app.env ให้อัตโนมัติ")
 			riskCfg.VolatilityMultiplier = cfg.VolatilityMultiplier
@@ -252,9 +182,7 @@ func loadOrSeedRiskConfig(store *database.Store, cfg config.Config) domain.RiskC
 				log.Fatal().Err(err).Msg("Failed to backfill VolatilityMultiplier into DB")
 			}
 		}
-		// เหมือนกันกับ VolatilityMultiplier ด้านบน แต่สำหรับคอลัมน์ ATRMultiplier
-		// (2026-10) — ถ้าปล่อยไว้ 0 แล้วมีคนเปิด UseATRForSizing ทีหลังจะได้
-		// slDistance=0 เทรดไม่ได้เลย เติมจาก app.env ไว้ก่อนเผื่อไว้
+
 		if riskCfg.ATRMultiplier <= 0 {
 			log.Warn().Msg("⚠️ risk_config row missing ATRMultiplier (เก่ากว่าฟีเจอร์นี้) — เติมจาก app.env ให้อัตโนมัติ")
 			riskCfg.ATRMultiplier = cfg.ATRMultiplier
@@ -262,9 +190,7 @@ func loadOrSeedRiskConfig(store *database.Store, cfg config.Config) domain.RiskC
 				log.Fatal().Err(err).Msg("Failed to backfill ATRMultiplier into DB")
 			}
 		}
-		// UseATRForSizing ไม่ต้อง backfill — AutoMigrate เติมคอลัมน์ bool ใหม่ให้
-		// แถวเก่าเป็น false อยู่แล้ว ซึ่งเป็นค่า default ที่ถูกต้อง (ปิดไว้ก่อน
-		// จนกว่าจะเปิดเองผ่าน PUT /api/v1/risk/config) ไม่มีอะไรต้องแก้
+
 		log.Info().Msg("💾 Loaded risk config from DB (overrides app.env)")
 		return riskCfg
 	}
@@ -289,31 +215,16 @@ func loadOrSeedRiskConfig(store *database.Store, cfg config.Config) domain.RiskC
 	return riskCfg
 }
 
-// setupQuantEngine สร้าง PureQuantEngine และลงทะเบียน strategy ทั้งหมด
 func setupQuantEngine() *strategy.QuantEngine {
 	quantEngine := strategy.NewQuantEngine(BufferCapacity, WindowSize)
 	quantEngine.SetSignalCooldown(SignalCooldown)
 	quantEngine.SetLongTermWindowSize(LongTermWindowSize)
 	quantEngine.SetMultiTimeframeFilter(strategy.NewMultiTimeframeFilter(MultiTimeframeMinSlope))
-
-	// CVD/POC metrics คำนวณและโชว์ใน /api/v1/status เสมอไม่ว่าจะเปิดบรรทัด
-	// ด้านล่างนี้หรือไม่ — เมื่อดู CVD/CVDTrendSlope/POCPrice/DistanceToPOC จริง
-	// สักพักแล้วพอจะตั้ง threshold ได้ ค่อยเปิดบรรทัดนี้:
-	// quantEngine.SetLiquidityConfluenceFilter(strategy.NewLiquidityConfluenceFilter(LiquidityMinCVDMagnitude, LiquidityMaxDistanceFromPOC))
-
 	registerStrategies(quantEngine)
 
 	return quantEngine
 }
 
-// backfillQuantEngineState ดึง tick_history ย้อนหลัง BackfillLookback ชั่วโมง
-// มา replay เข้า QuantEngine ก่อนเริ่มรับ tick สด — แก้ปัญหาที่ Multi-TF/ATR/
-// CVD/Volume Profile ต้องเริ่มนับจากศูนย์ใหม่ทุกครั้งที่ restart (Daily
-// TimeWindow กว่าจะ warm up ใช้เวลาเกือบ 20 ชม.) ทั้งที่ tick_history บันทึก
-// ข้อมูลไว้ต่อเนื่องอยู่แล้วตั้งแต่ฟีเจอร์ Tick History Recording — ถ้า
-// tick_history มีข้อมูลน้อยกว่า BackfillLookback (เช่น รันครั้งแรก) ก็แค่ได้
-// เท่าที่มี ไม่ fail การ start เพราะนี่เป็นแค่ optimization ไม่ใช่ correctness
-// requirement (ไม่มี backfill เลยก็ยังทำงานได้ แค่ warm up ช้ากว่า)
 func backfillQuantEngineState(quantEngine *strategy.QuantEngine, store *database.Store, symbol string) {
 	since := time.Now().Add(-BackfillLookback)
 	ticks, err := store.TickHistorySince(symbol, since)
@@ -335,23 +246,15 @@ func backfillQuantEngineState(quantEngine *strategy.QuantEngine, store *database
 }
 
 func registerStrategies(quantEngine *strategy.QuantEngine) {
-	// Register Volume Expansion Strategy (ใช้ Volume แทน Open Interest เพราะ
-	// Exness/โบรกเกอร์ CFD ไม่ส่งข้อมูล Open Interest จริงมาให้)
-	// minVolumeVelocity ขยับขึ้นจาก 1.0 (ไวเกินไปมาก ยิงแทบทุก tick บนข้อมูลจริง)
-	// — ยังเป็นค่าประมาณ ต้องดู VolVel จริงจาก /api/v1/signals แล้ว tune ต่อ
 	volumeStrategy := strategy.NewVolumeExpansionStrategy("VOLUME_EXPANSION_XAUUSD", 2.0, 50.0, 0.2, MinLongTermTrendSlope)
 	quantEngine.RegisterStrategy(volumeStrategy)
 	log.Info().Str("strategy", volumeStrategy.ID()).Msg("✅ Registered Strategy")
 
-	// Register Liquidity Sweep Fade Strategy
 	sweepStrategy := strategy.NewLiquiditySweepStrategy("LIQUIDITY_SWEEP_FADE_XAUUSD", TradingSymbol, SweepWindowSize, SweepTrendSlopeThreshold, MinLongTermTrendSlope)
 	quantEngine.RegisterStrategy(sweepStrategy)
 	log.Info().Str("strategy", sweepStrategy.ID()).Msg("✅ Registered Strategy")
 }
 
-// setupRiskManagement สร้าง RiskGuard (circuit breaker, position tracking,
-// persist ผ่าน store) และ RiskManager (position sizing) จาก risk policy ที่
-// โหลด/seed ไว้แล้ว
 func setupRiskManagement(store *database.Store, riskCfg domain.RiskConfig, accountBalance float64) (*risk.RiskGuard, *risk.RiskManager) {
 	riskGuard := risk.NewRiskGuard(risk.RiskGuardConfig{
 		MaxDailyLossPercent:  riskCfg.MaxDailyLossPercent,
@@ -368,8 +271,6 @@ func setupRiskManagement(store *database.Store, riskCfg domain.RiskConfig, accou
 	return riskGuard, riskManager
 }
 
-// setupExecutionRouter ผูก ExecutionRouter เข้ากับ store ทั้งสองแบบ (signal
-// history ธรรมดา + outbox pattern สำหรับ order ที่กำลังจะส่ง)
 func setupExecutionRouter(quantEngine *strategy.QuantEngine, riskManager *risk.RiskManager, riskGuard *risk.RiskGuard, orderSink chan risk.PreparedOrder, store *database.Store) *pipeline.ExecutionRouter {
 	execRouter := pipeline.NewExecutionRouter(quantEngine, riskManager, riskGuard, orderSink, WorkerCount)
 	execRouter.AttachStore(store)
@@ -377,11 +278,6 @@ func setupExecutionRouter(quantEngine *strategy.QuantEngine, riskManager *risk.R
 	return execRouter
 }
 
-// logUnresolvedPendingOrders เตือนตอน startup ถ้าเจอ outbox row ที่ยังค้าง
-// PENDING (crash ระหว่างตัดสินใจส่งกับส่งจริง) หรือ UNKNOWN (SendOrder error
-// เช่น timeout/EOF ไม่รู้ว่าเข้าตลาดจริงไหม) — ไม่ auto-resend เพราะเสี่ยง
-// เปิด position ซ้อน แค่เตือนดังๆ ให้เช็คมือผ่าน MT5 tab Trade ก่อน (ดู
-// รายละเอียดที่ GET /api/v1/pending-orders)
 func logUnresolvedPendingOrders(store *database.Store) {
 	unresolved, err := store.UnresolvedPendingOrders()
 	if err != nil {
@@ -399,8 +295,6 @@ func logUnresolvedPendingOrders(store *database.Store) {
 	}
 }
 
-// dispatchOrders ดึง PreparedOrder จาก orderSink แล้วส่งไปยัง MT5 ผ่าน TCP
-// Adapter ทีละตัว จนกว่า ctx จะถูกยกเลิกหรือ channel ถูกปิด
 func dispatchOrders(ctx context.Context, mt5Adapter *mt5.TCPAdapter, riskGuard *risk.RiskGuard, store *database.Store, orderSink <-chan risk.PreparedOrder) {
 	for {
 		select {
@@ -415,10 +309,6 @@ func dispatchOrders(ctx context.Context, mt5Adapter *mt5.TCPAdapter, riskGuard *
 	}
 }
 
-// dispatchOrder ส่ง order เดียวเข้า MT5 แล้วจัดการผลลัพธ์ 3 แบบ: ส่งสำเร็จ
-// (บันทึก attribution + outbox SENT), broker ปฏิเสธชัดเจน (ปลด position lock
-// ทันทีเพราะรู้แน่ว่าไม่เปิด + outbox FAILED), หรือ transport error ที่ไม่รู้
-// ผลจริง (outbox UNKNOWN, ไม่แตะ position lock, ไม่ auto-resend)
 func dispatchOrder(ctx context.Context, mt5Adapter *mt5.TCPAdapter, riskGuard *risk.RiskGuard, store *database.Store, preparedOrder risk.PreparedOrder) {
 	tradeReq := domain.TradeRequest{
 		Symbol: preparedOrder.Symbol,
@@ -469,8 +359,6 @@ func dispatchOrder(ctx context.Context, mt5Adapter *mt5.TCPAdapter, riskGuard *r
 	}
 }
 
-// consumeTicks สมัครรับ tick stream จาก MT5 แล้วป้อนเข้า QuantEngine ทีละ
-// tick — ถ้าสมัครไม่สำเร็จแค่ log แล้วจบ (ไม่ fail ทั้งระบบ)
 func consumeTicks(ctx context.Context, streamAdapter *mt5.StreamAdapter, quantEngine *strategy.QuantEngine, historyChan chan<- domain.Tick) {
 	tickChan, err := streamAdapter.SubscribeTicks(ctx)
 	if err != nil {
@@ -482,9 +370,6 @@ func consumeTicks(ctx context.Context, streamAdapter *mt5.StreamAdapter, quantEn
 	for tick := range tickChan {
 		quantEngine.PushTick(tick)
 
-		// ส่งต่อให้ background recorder เก็บ tick_history — non-blocking เสมอ
-		// (ถ้า recorder ตามไม่ทัน ยอมดรอป tick ทิ้งไปเลย ดีกว่าไปหน่วง live
-		// trading path ซึ่งต้องเร็วที่สุดเป็นหลัก ตามหลักการเดิมของโปรเจกต์)
 		select {
 		case historyChan <- tick:
 		default:
@@ -494,10 +379,6 @@ func consumeTicks(ctx context.Context, streamAdapter *mt5.StreamAdapter, quantEn
 	log.Info().Msg("Tick consumer stopped")
 }
 
-// recordTickHistory เก็บ tick ทุกตัวที่ไหลผ่าน historyChan ลง tick_history —
-// รันแยกจาก live trading path โดยสิ้นเชิง (consumeTicks แค่ non-blocking ส่ง
-// เข้ามาเฉยๆ) เขียนลง DB แบบ batch (ครบ tickHistoryBatchSize แถว หรือครบ
-// tickHistoryFlushInterval แล้วแต่อย่างไหนถึงก่อน) ไม่ insert ทีละ tick
 func recordTickHistory(ctx context.Context, historyChan <-chan domain.Tick, store *database.Store) {
 	batch := make([]domain.Tick, 0, tickHistoryBatchSize)
 	ticker := time.NewTicker(tickHistoryFlushInterval)
@@ -533,10 +414,7 @@ func recordTickHistory(ctx context.Context, historyChan <-chan domain.Tick, stor
 	}
 }
 
-// consumeTradeClosedEvents สมัครรับ trade_closed event จาก MT5 (ใช้ connection
-// เดียวกับ tick stream — ต้องแก้ EA ให้ยิง OnTradeTransaction() มาด้วย ไม่งั้น
-// channel นี้จะเงียบตลอด) แล้วป้อนผลแพ้/ชนะจริงกลับเข้า RiskGuard ทีละ event
-func consumeTradeClosedEvents(ctx context.Context, streamAdapter *mt5.StreamAdapter, riskGuard *risk.RiskGuard, store *database.Store) {
+func consumeTradeClosedEvents(ctx context.Context, streamAdapter *mt5.StreamAdapter, riskGuard *risk.RiskGuard, store *database.Store, winRateGate *risk.WinRateGate) {
 	tradeClosedChan, err := streamAdapter.SubscribeTradeEvents(ctx)
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to subscribe trade closed events")
@@ -544,14 +422,31 @@ func consumeTradeClosedEvents(ctx context.Context, streamAdapter *mt5.StreamAdap
 	}
 
 	for event := range tradeClosedChan {
-		handleTradeClosed(riskGuard, store, event)
+		handleTradeClosed(riskGuard, store, winRateGate, event)
 	}
 }
 
-// handleTradeClosed อัปเดต RiskGuard + balance ตาม P/L จริง แล้ว attribute
-// ผลลัพธ์กลับไปหา strategy ต้นเหตุถ้าจับคู่ ticket ได้ (persist ลง
-// pending_attributions แล้ว รอดจาก restart ระหว่าง position ยังเปิดค้างอยู่ได้)
-func handleTradeClosed(riskGuard *risk.RiskGuard, store *database.Store, event domain.TradeClosedEvent) {
+func refreshWinRateGate(gate *risk.WinRateGate, store *database.Store) {
+	stats, err := store.WinRateByStrategy()
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to refresh win-rate gate stats")
+		return
+	}
+
+	out := make([]risk.StrategyWinRate, len(stats))
+	for i, s := range stats {
+		out[i] = risk.StrategyWinRate{
+			StrategyTag: s.StrategyTag,
+			Wins:        s.Wins,
+			Losses:      s.Losses,
+			TotalTrades: s.TotalTrades,
+			WinRate:     s.WinRate,
+		}
+	}
+	gate.UpdateStats(out)
+}
+
+func handleTradeClosed(riskGuard *risk.RiskGuard, store *database.Store, winRateGate *risk.WinRateGate, event domain.TradeClosedEvent) {
 	isWin := event.Profit > 0
 	riskGuard.RecordTradeResult(isWin)
 	riskGuard.MarkPositionClosed(event.Symbol)
@@ -572,10 +467,7 @@ func handleTradeClosed(riskGuard *risk.RiskGuard, store *database.Store, event d
 		log.Warn().Err(attrErr).Uint64("ticket", event.Ticket).Msg("Failed to load pending attribution")
 	}
 	if ok {
-		strategyTag := reason
-		if idx := strings.Index(reason, " ("); idx >= 0 {
-			strategyTag = reason[:idx]
-		}
+		strategyTag := domain.StrategyTagFromReason(reason)
 
 		if err := store.SaveTradeOutcome(database.TradeOutcome{
 			Symbol:      event.Symbol,
@@ -588,6 +480,8 @@ func handleTradeClosed(riskGuard *risk.RiskGuard, store *database.Store, event d
 			Timestamp:   event.Timestamp,
 		}); err != nil {
 			log.Warn().Err(err).Msg("Failed to save trade outcome")
+		} else {
+			refreshWinRateGate(winRateGate, store)
 		}
 	} else {
 		log.Warn().Uint64("ticket", event.Ticket).Msg("Trade closed but no matching signal reason found (service restarted while position was open?)")
@@ -601,9 +495,6 @@ func handleTradeClosed(riskGuard *risk.RiskGuard, store *database.Store, event d
 		Msg("💰 Trade closed")
 }
 
-// startHTTPServer ประกอบ gin router (health check + /api/v1/* ทั้งหมดผ่าน
-// v1.RouterV1) แล้ว start ListenAndServe ใน goroutine แยก คืน *http.Server
-// กลับไปให้ waitForShutdown ปิดแบบ graceful ทีหลัง
 func startHTTPServer(
 	cfg config.Config,
 	mt5Adapter *mt5.TCPAdapter,
@@ -638,8 +529,6 @@ func startHTTPServer(
 	return srv
 }
 
-// waitForShutdown บล็อกจนกว่า ctx จะถูกยกเลิก (SIGINT/SIGTERM) แล้วปิด HTTP
-// server แบบ graceful (รอ request ที่ค้างอยู่ให้เสร็จก่อน ไม่เกิน 5 วินาที)
 func waitForShutdown(ctx context.Context, srv *http.Server) {
 	<-ctx.Done()
 	log.Info().Msg("🛑 Shutting down Alphago MT5 Service gracefully...")

@@ -9,13 +9,8 @@ import (
 	"github.com/nes224/alphago-mt5/internal/core/services/strategy"
 )
 
-// testTrendSlopeThreshold is large enough that the zero-value TrendSlope used
-// by most tests below (they don't go through the real engine) is always
-// treated as "ranging", so it doesn't interfere with sweep/no-sweep assertions.
 const testTrendSlopeThreshold = 1.0
 
-// warmUpFlatRange feeds identical ticks so the detector's rolling High/Low
-// settles at a fixed range without triggering a sweep during warmup.
 func warmUpFlatRange(s *strategy.LiquiditySweepStrategy, symbol string, ask, bid float64, n int) {
 	for i := 0; i < n; i++ {
 		s.OnTick(domain.Tick{Symbol: symbol, Ask: ask, Bid: bid, Timestamp: time.Now()}, domain.TickMetrics{})
@@ -80,9 +75,6 @@ func TestLiquiditySweepStrategy_SymbolMismatch_ReturnsNil(t *testing.T) {
 	}
 }
 
-// TestLiquiditySweepStrategy_QuantEngineIntegration wires the strategy into a
-// real QuantEngine (not a mock) and verifies a sweep on live tick flow ends
-// up dispatched on the engine's SignalChannel().
 func TestLiquiditySweepStrategy_QuantEngineIntegration(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -128,7 +120,6 @@ func TestLiquiditySweepStrategy_TrendingMarket_SuppressesFadeSignal(t *testing.T
 	s := strategy.NewLiquiditySweepStrategy("LIQUIDITY_SWEEP_TEST", "XAUUSDm", 5, testTrendSlopeThreshold, 0)
 	warmUpFlatRange(s, "XAUUSDm", 2603.00, 2602.80, 5)
 
-	// A genuine High sweep, but the engine reports a steep trend (|slope| >= threshold).
 	trendingMetrics := domain.TickMetrics{TrendSlope: testTrendSlopeThreshold * 2}
 	sweepHighTick := domain.Tick{Symbol: "XAUUSDm", Ask: 2607.00, Bid: 2606.80, Timestamp: time.Now()}
 

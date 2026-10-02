@@ -12,25 +12,6 @@ func almostEqual(a, b, tolerance float64) bool {
 	return math.Abs(a-b) <= tolerance
 }
 
-// TestATRCalculator_SeedsAndSmoothsAgainstHandComputedValues drives a
-// synthetic tick series through 1-minute periods (numPeriods=3, small on
-// purpose so the test doesn't need 14 periods of fixture data) and checks
-// the result against hand-computed True Range / Wilder smoothing values.
-//
-// Periods (bucketed by minute):
-//
-//	P0 [0:00-0:59]: 100, 105, 98        -> high=105 low=98  close=98
-//	P1 [1:00-1:59]: 99, 110, 101        -> high=110 low=99  close=101
-//	P2 [2:00-2:59]: 102, 108, 95        -> high=108 low=95  close=95
-//	P3 [3:00-3:59]: 100, 103            -> high=103 low=100 close=103
-//
-// TR0 (no prevClose) = high-low = 105-98 = 7
-// TR1 = max(110-99, |110-98|, |99-98|)  = max(11,12,1)  = 12
-// TR2 = max(108-95, |108-101|,|95-101|) = max(13,7,6)   = 13
-// TR3 = max(103-100,|103-95|, |100-95|) = max(3,8,5)    = 8
-//
-// Seed (after TR0,TR1,TR2): ATR = (7+12+13)/3 = 10.6667, ready becomes true.
-// Next (Wilder, after TR3): ATR = (10.6667*2 + 8)/3 = 9.7778
 func TestATRCalculator_SeedsAndSmoothsAgainstHandComputedValues(t *testing.T) {
 	a := strategy.NewATRCalculator(1*time.Minute, 3)
 	base := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)

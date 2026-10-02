@@ -8,10 +8,6 @@ import (
 	"github.com/nes224/alphago-mt5/internal/core/domain"
 )
 
-// fireOnceStrategy is a deterministic test double -- fires a single BUY
-// signal on a chosen OnTick call index (0-based), regardless of metrics, so
-// Runner tests don't depend on coaxing the real production strategies'
-// Z-score/sweep thresholds into firing on hand-crafted price data.
 type fireOnceStrategy struct {
 	fireOnCall int
 	calls      int

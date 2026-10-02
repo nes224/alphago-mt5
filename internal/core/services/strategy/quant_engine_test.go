@@ -520,14 +520,10 @@ func TestQuantEngine_LongTermTrendSlope_TracksLongerWindow(t *testing.T) {
 	engine.SetLongTermWindowSize(10)          // long window = 10 tick, reacts slower
 
 	now := time.Now()
-	// Flat prices first so both windows start at slope 0.
 	for i := 0; i < 5; i++ {
 		engine.ProcessTick(domain.Tick{Symbol: "XAUUSDm", Bid: 2600.0, Ask: 2600.2, Timestamp: now.Add(time.Duration(i) * time.Millisecond)})
 	}
 
-	// Then a sustained rise — short window (3 tick) should pick up the new
-	// slope fully within a few ticks; long window (10 tick) needs more ticks
-	// since it's still diluted by the flat history sitting in its buffer.
 	var lastMetrics domain.TickMetrics
 	for i := 0; i < 3; i++ {
 		lastMetrics = engine.ProcessTick(domain.Tick{
@@ -568,7 +564,6 @@ func TestQuantEngine_DailyRange_TracksOpenHighLowAndResetsOnNewDay(t *testing.T)
 		t.Errorf("Expected DailyHigh to rise to %f, got %f", m.Price, m.DailyHigh)
 	}
 
-	// A lower tick should lower DailyLow but not touch DailyHigh.
 	m = engine.ProcessTick(domain.Tick{Symbol: "XAUUSDm", Bid: 2590.0, Ask: 2590.2, Timestamp: day1.Add(2 * time.Hour)})
 	if m.DailyLow != m.Price {
 		t.Errorf("Expected DailyLow to fall to %f, got %f", m.Price, m.DailyLow)
@@ -577,7 +572,6 @@ func TestQuantEngine_DailyRange_TracksOpenHighLowAndResetsOnNewDay(t *testing.T)
 		t.Errorf("Expected DailyHigh to stay at the earlier peak 2610.1, got %f", m.DailyHigh)
 	}
 
-	// A tick on the next calendar day should reset Open/High/Low fresh.
 	day2 := day1.Add(24 * time.Hour)
 	m = engine.ProcessTick(domain.Tick{Symbol: "XAUUSDm", Bid: 2700.0, Ask: 2700.2, Timestamp: day2})
 	if m.DailyOpen != m.Price || m.DailyHigh != m.Price || m.DailyLow != m.Price {
@@ -585,12 +579,6 @@ func TestQuantEngine_DailyRange_TracksOpenHighLowAndResetsOnNewDay(t *testing.T)
 	}
 }
 
-// TestQuantEngine_ReversalDetection_MomentumDeceleration feeds a price series
-// whose per-tick velocity keeps shrinking (10 -> 8 -> 6 -> ...) while staying
-// positive — PriceVelocity itself never turns negative, but VelocityTrendSlope
-// (the slope of velocity's own recent history) should go negative, since
-// that's the whole point of this leading indicator: catching deceleration
-// before TrendSlope actually flips sign.
 func TestQuantEngine_ReversalDetection_MomentumDeceleration(t *testing.T) {
 	engine := strategy.NewQuantEngine(100, 3) // small window so the decelerating run dominates it quickly
 	now := time.Now()
@@ -647,19 +635,9 @@ func TestQuantEngine_ReversalDetection_VolatilityContraction(t *testing.T) {
 	}
 }
 
-// TestQuantEngine_Backfill_UpdatesStateWithoutDispatchingSignals guards the
-// startup backfill feature (replaying Store.TickHistorySince through the
-// engine so Multi-TF/ATR/CVD don't start cold on every restart): historical
-// ticks must update all the same rolling state a live tick would, but must
-// NEVER reach a registered strategy or produce a signal — these are
-// historical ticks, not something to act on right now.
 func TestQuantEngine_Backfill_UpdatesStateWithoutDispatchingSignals(t *testing.T) {
 	engine := strategy.NewQuantEngine(10, 5)
 	engine.SetMultiTimeframeFilter(strategy.NewMultiTimeframeFilter(0.0001))
-
-	// targetZ=0.0 means abs(ZScore) >= 0 is always true -- this strategy
-	// fires on literally every tick it ever sees, so if Backfill leaked any
-	// tick through to strategy dispatch, this test would catch it.
 	alwaysFires := NewMockStrategy("ALWAYS_FIRES", 0.0)
 	engine.RegisterStrategy(alwaysFires)
 

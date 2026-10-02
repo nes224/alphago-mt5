@@ -1,16 +1,3 @@
-// import-tick-history is a one-time CLI tool that backfills the live
-// tick_history Postgres table from a historical OHLCV CSV, so
-// cmd/app/main.go's backfillQuantEngineState has real history to warm up
-// Multi-TF/ATR/CVD from on next startup instead of starting cold.
-//
-// Note: the live backfill (BackfillLookback in cmd/app/main.go) only reads
-// the last 25 hours of tick_history -- importing years of data does not
-// make live warm-up any more effective beyond that window (Daily only needs
-// 24h). The default range here is the last 2 days for exactly that reason;
-// override -from/-to if you want tick_history to hold a longer archive for
-// other purposes too. Imported rows are synthesized from OHLCV bars (see
-// internal/backtest.SynthesizeTicks), not real sub-second ticks -- same
-// accuracy caveats as cmd/backtest.
 package main
 
 import (

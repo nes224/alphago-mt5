@@ -37,7 +37,6 @@ func (s *VolumeExpansionStrategy) ID() string {
 }
 
 func (s *VolumeExpansionStrategy) OnTick(tick domain.Tick, metrics domain.TickMetrics) *domain.OrderSignal {
-	// Bullish Volume Expansion: Z-Score พุ่งทะลุ + Volume ไหลเข้า + ราคาขยับเร็วขึ้น
 	if metrics.ZScore >= s.targetZScore &&
 		metrics.VolumeDelta > 0 &&
 		metrics.VolumeVelocity >= s.minVolumeVelocity &&
@@ -52,7 +51,6 @@ func (s *VolumeExpansionStrategy) OnTick(tick domain.Tick, metrics domain.TickMe
 		}
 	}
 
-	// Bearish Volume Expansion: Z-Score ร่วงทะลุ + Volume ไหลเข้า (Short Expansion) + ราคาดิ่งลง
 	if metrics.ZScore <= -s.targetZScore &&
 		metrics.VolumeDelta > 0 &&
 		metrics.VolumeVelocity >= s.minVolumeVelocity &&
@@ -70,8 +68,6 @@ func (s *VolumeExpansionStrategy) OnTick(tick domain.Tick, metrics domain.TickMe
 	return nil
 }
 
-// longTermTrendAllows เช็คว่าทิศทางที่จะเทรด (wantBuy) สอดคล้องกับ trend ของ
-// window ยาวไหม — ถ้า minLongTermTrendSlope <= 0 ถือว่าปิดการเช็คนี้ (อนุญาตเสมอ)
 func (s *VolumeExpansionStrategy) longTermTrendAllows(longTermSlope float64, wantBuy bool) bool {
 	if s.minLongTermTrendSlope <= 0 {
 		return true

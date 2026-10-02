@@ -51,14 +51,12 @@ func TestRollingVolumeProfile_EvictsOldVolumeAndPOCShiftsAccordingly(t *testing.
 	p := strategy.NewRollingVolumeProfile(1.0, 1*time.Minute)
 	base := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 
-	// Big volume at 100 early on.
 	p.Push(base, 100.5, 100)
 	_, vol, _ := p.POC()
 	if vol != 100 {
 		t.Fatalf("expected initial POC volume 100, got %f", vol)
 	}
 
-	// Smaller volume at 200, 2 minutes later: evicts the 100-bucket entirely.
 	p.Push(base.Add(2*time.Minute), 200.5, 10)
 	pocPrice, pocVolume, ok := p.POC()
 	if !ok {

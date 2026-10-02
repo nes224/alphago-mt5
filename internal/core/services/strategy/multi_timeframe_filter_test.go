@@ -16,15 +16,6 @@ func TestMultiTimeframeFilter_AllowsWhenNoDataYet(t *testing.T) {
 	}
 }
 
-// pushUptrend feeds a steadily rising price series spanning enough wall-clock
-// time that Daily/H4/M30/M15 windows are all actually warmed up (Span() >=
-// 0.8 * their configured duration — see TimeWindow.minDirectionWarmupFraction)
-// and see a clear upward slope. 5-minute spacing, 21h total: Daily never
-// evicts within 21h so its span grows to the full ~21h (>=19.2h req); H4/
-// M30/M15 each settle into a steady-state span equal to their own duration
-// (since 5min evenly divides all of them, the oldest surviving point always
-// lands exactly `duration` behind the latest one) — 4h/30min/15min, each
-// comfortably above their 3.2h/24min/12min warm-up requirement.
 func pushUptrend(f *strategy.MultiTimeframeFilter, symbol string, base time.Time) {
 	price := 4000.0
 	const step = 5 * time.Minute
@@ -52,8 +43,6 @@ func TestMultiTimeframeFilter_AllowsBuyAndBlocksSellInUptrend(t *testing.T) {
 func TestMultiTimeframeFilter_FailsOpenWhenSpanTooShortDespiteStrongSlope(t *testing.T) {
 	f := strategy.NewMultiTimeframeFilter(0.001)
 	base := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
-	// Only 3 seconds of Daily/H4 span, but a huge slope — before the
-	// warm-up fix this could spuriously report a confident Direction().
 	f.PushTick("XAUUSDm", 4000.0, base)
 	f.PushTick("XAUUSDm", 4010.0, base.Add(3*time.Second))
 

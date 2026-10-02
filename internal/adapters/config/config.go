@@ -13,36 +13,17 @@ type Config struct {
 	MT5StreamPort     int    `mapstructure:"MT5_STREAM_PORT"` // Live tick/price stream socket (separate listener on the EA side)
 	MT5TimeoutSeconds int    `mapstructure:"MT5_TIMEOUT_SECONDS"`
 
-	// DatabaseURL เชื่อม PostgreSQL สำหรับ persist account balance, risk guard
-	// state และ signal history ข้าม restart (internal/adapters/database)
-	DatabaseURL string `mapstructure:"DATABASE_URL"`
-
-	// Risk & Position Sizing — ACCOUNT_BALANCE ใน app.env เป็นแค่ "seed" สำหรับ
-	// รันครั้งแรกเท่านั้น หลังจากนั้นระบบจะอ่าน/เขียน balance จริงจาก Postgres
-	// (ตาราง account_state) แทน ค่าอื่นๆ เป็น safety limit ป้องกันไม้ใหญ่/เสี่ยงเกินไป
+	DatabaseURL         string  `mapstructure:"DATABASE_URL"`
 	AccountBalance      float64 `mapstructure:"ACCOUNT_BALANCE"`
 	RiskPerTradePercent float64 `mapstructure:"RISK_PER_TRADE_PERCENT"`
 	MinLotSize          float64 `mapstructure:"MIN_LOT_SIZE"`
 	MaxLotSize          float64 `mapstructure:"MAX_LOT_SIZE"`
 
-	// MinSLDistance/MaxSLDistance ไม่ใช่ตัวขับหลักของ SL/TP อีกต่อไปตั้งแต่
-	// Volatility-Adaptive Position Sizing (2026-10-01 — ดู ROADMAP.md) — ตอนนี้
-	// เป็นแค่ราวกันตกสองข้างของ VolatilityMultiplier × SizingVolatility ค่าที่
-	// เคยตั้งไว้ (3.0/20.0) คำนวณไว้ตอนตลาดผันผวนน้อยกว่านี้มาก ถ้าตั้งไว้แคบ
-	// เกินไปจะไปจำกัด SL ที่คำนวณจาก volatility จริงไม่ให้กว้างได้เท่าที่ควร —
-	// ปรับผ่าน PUT /api/v1/risk/config ได้โดยไม่ต้องแก้ไฟล์นี้/restart
-	MinSLDistance float64 `mapstructure:"MIN_SL_DISTANCE"`
-	MaxSLDistance float64 `mapstructure:"MAX_SL_DISTANCE"`
-
-	// VolatilityMultiplier คือตัวคูณ SizingVolatility (StdDev ของ M15) เพื่อได้
-	// SL distance — ค่าเริ่มต้น 2.0 ยังไม่ผ่าน backtest จริง เป็นค่าประมาณ
+	MinSLDistance        float64 `mapstructure:"MIN_SL_DISTANCE"`
+	MaxSLDistance        float64 `mapstructure:"MAX_SL_DISTANCE"`
 	VolatilityMultiplier float64 `mapstructure:"VOLATILITY_MULTIPLIER"`
-
-	// ATRMultiplier คือตัวคูณ ATR (M5×14) แทน VolatilityMultiplier ตอน
-	// UseATRForSizing=true — คนละ scale กับ StdDev จึงต้องมีค่า default ของตัว
-	// เอง ยังไม่ผ่าน backtest จริง เป็นค่าประมาณ
-	ATRMultiplier   float64 `mapstructure:"ATR_MULTIPLIER"`
-	UseATRForSizing bool    `mapstructure:"USE_ATR_FOR_SIZING"`
+	ATRMultiplier        float64 `mapstructure:"ATR_MULTIPLIER"`
+	UseATRForSizing      bool    `mapstructure:"USE_ATR_FOR_SIZING"`
 
 	MaxDailyLossPercent float64 `mapstructure:"MAX_DAILY_LOSS_PERCENT"`
 	MaxOpenPositions    int     `mapstructure:"MAX_OPEN_POSITIONS"`
