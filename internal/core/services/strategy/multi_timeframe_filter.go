@@ -7,24 +7,6 @@ import (
 	"github.com/nes224/alphago-mt5/internal/core/domain"
 )
 
-// MultiTimeframeFilter implements Top-Down trend confirmation (design notes,
-// 2026-09-30): Daily + H4 must agree on direction (Bias) — disagreement
-// blocks both directions — then M30 or M15 must agree with that Bias
-// (Confirmation) before a tick-level entry signal is allowed through. Entry
-// timing itself is still left entirely to VolumeExpansionStrategy /
-// LiquiditySweepStrategy; this filter only answers "which direction (if
-// any) is currently allowed".
-//
-// Supersedes the old Dual-Window Trend Filter (SUPERSEDED 2026-09-30 — see
-// ROADMAP.md): that one counted a fixed number of ticks instead of real
-// time, so its "long-term window" could span 2 minutes or 20 minutes
-// depending on market activity and never lined up with any real timeframe.
-// It also failed CLOSED (block) whenever it didn't have a confident
-// direction, and a badly-guessed threshold made that true for every signal,
-// permanently wedging the whole pipeline. This filter deliberately fails
-// OPEN (allow) whenever there isn't a clear direction yet or not enough
-// history — see Allows() below — so a wrong MinSlope threshold makes this
-// filter a no-op in the worst case, not a total block.
 type MultiTimeframeFilter struct {
 	mu          sync.Mutex
 	minSlope    float64
@@ -38,11 +20,6 @@ type symbolWindows struct {
 	m15   *TimeWindow
 }
 
-// NewMultiTimeframeFilter ตั้ง minSlope ตัวเดียวใช้ร่วมกันทุกระดับ (Daily/H4/
-// M30/M15) — ยังไม่ได้ผ่าน backtest จริง เป็นค่าประมาณ ต้องเก็บข้อมูล slope
-// จริงจากตลาดก่อนถึงจะ tune ค่านี้ได้แม่นยำ (เหมือนค่าอื่นๆ ที่ flag ไว้ใน
-// cmd/app/main.go) — แต่เพราะ fail-open ต่อให้ยังไม่แม่น ก็ไม่ทำให้ signal
-// ทุกตัวถูกบล็อกแบบ Dual-Window เดิม
 func NewMultiTimeframeFilter(minSlope float64) *MultiTimeframeFilter {
 	return &MultiTimeframeFilter{
 		minSlope:    minSlope,
@@ -50,8 +27,6 @@ func NewMultiTimeframeFilter(minSlope float64) *MultiTimeframeFilter {
 	}
 }
 
-// PushTick ป้อนราคาเข้าทุก TimeWindow ของ symbol นี้พร้อมกัน — เรียกทุก tick
-// เหมือน QuantEngine.calculateMetrics ทำกับ Window เดิม
 func (f *MultiTimeframeFilter) PushTick(symbol string, price float64, t time.Time) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -73,9 +48,6 @@ func (f *MultiTimeframeFilter) PushTick(symbol string, price float64, t time.Tim
 	sw.m15.Push(t, price)
 }
 
-// Allows คืน true ถ้า action (BUY/SELL) ไปทางเดียวกับ Bias+Confirmation ของ
-// symbol นี้ — คืน true (ไม่ขวาง) ถ้ายังไม่มีข้อมูลพอ หรือ Daily/H4 ยังไม่มี
-// ทิศทางชัดเจน (fail-open โดยตั้งใจ — ดู comment บน struct)
 func (f *MultiTimeframeFilter) Allows(symbol string, action domain.SignalAction) bool {
 	f.mu.Lock()
 	sw, ok := f.symbolState[symbol]
@@ -123,9 +95,6 @@ func timeframeState(tw *TimeWindow, minSlope float64) domain.TimeframeState {
 	}
 }
 
-// State returns the full observable Bias/Confirmation state for a symbol —
-// see domain.MultiTimeframeState. Returns HasData=false (everything else
-// zero) if the symbol has never been pushed a tick.
 func (f *MultiTimeframeFilter) State(symbol string) domain.MultiTimeframeState {
 	f.mu.Lock()
 	sw, ok := f.symbolState[symbol]

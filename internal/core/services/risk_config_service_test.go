@@ -40,11 +40,6 @@ func validRiskConfig() domain.RiskConfig {
 		MaxSpreadPips:        5.0,
 	}
 }
-
-// TestRiskConfigService_SetRiskConfig_PersistsAndAppliesLive guards against a
-// regression of the original bug (CreateAccountService called itself
-// recursively and never reached the store) — a valid request must return
-// normally, be persisted, and actually change RiskManager's live behavior.
 func TestRiskConfigService_SetRiskConfig_PersistsAndAppliesLive(t *testing.T) {
 	store := &fakeRiskConfigStore{}
 	riskManager := risk.NewRiskManager(0.01, 10000.0, 0.01, 0.05, 3.0, 20.0, 2.0, 1.75, false)

@@ -2,8 +2,6 @@ package strategy
 
 import "math"
 
-// Window is a fixed-capacity rolling buffer of prices used to compute
-// a running mean/stddev per symbol for z-score calculations.
 type Window struct {
 	data     []float64
 	capacity int
@@ -56,10 +54,6 @@ func (w *Window) StdDev() float64 {
 	return math.Sqrt(varianceSum / n)
 }
 
-// Slope returns the least-squares linear regression slope of the buffered
-// prices against their tick index (oldest=0 .. newest=n-1). It approximates
-// how strongly the market is trending: a slope near 0 means sideways/ranging,
-// a large |slope| means a directional trend.
 func (w *Window) Slope() float64 {
 	n := float64(len(w.data))
 	if n < 2 {

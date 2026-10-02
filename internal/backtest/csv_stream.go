@@ -9,17 +9,6 @@ import (
 	"github.com/nes224/alphago-mt5/internal/core/domain"
 )
 
-// StreamOHLCVCSV reads a semicolon-delimited OHLCV CSV (header row expected
-// and skipped unconditionally -- "Date;Open;High;Low;Close;Volume"), keeps
-// only bars with Time in [from, to), and for each calls onTick 4 times (see
-// SynthesizeTicks) in chronological order. It streams line-by-line rather
-// than materializing the whole file, since the 1-minute file this package
-// was built for has millions of rows.
-//
-// Returns the first parse error encountered, wrapped with the 1-indexed line
-// number (counting the header as line 1) -- a malformed row is treated as a
-// hard failure, not silently skipped, since a backtest silently dropping
-// rows would produce a misleadingly clean-looking but wrong result.
 func StreamOHLCVCSV(path, symbol string, from, to time.Time, spreadHalf float64, onTick func(domain.Tick)) error {
 	f, err := os.Open(path)
 	if err != nil {

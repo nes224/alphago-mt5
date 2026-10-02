@@ -18,8 +18,6 @@ func NewRiskConfigHandler(riskConfigService *services.RiskConfigService) *RiskCo
 	return &RiskConfigHandler{riskConfigService: riskConfigService}
 }
 
-// PUT /api/v1/risk/config — ตั้ง risk policy แบบ live (ไม่ต้อง restart) แทน
-// การแก้ app.env — มีผลทันทีกับ RiskManager/RiskGuard และ persist ลง DB ด้วย
 func (h *RiskConfigHandler) SetRiskConfig(c *gin.Context) {
 	var req domain.RiskConfig
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -39,8 +37,6 @@ func (h *RiskConfigHandler) SetRiskConfig(c *gin.Context) {
 	})
 }
 
-// GET /api/v1/risk/config — ค่า risk policy ล่าสุดที่ persist ไว้ (404 ถ้ายัง
-// ไม่เคยเรียก PUT เลยสักครั้ง — แปลว่าตอนนี้ยังรันด้วยค่า seed จาก app.env อยู่)
 func (h *RiskConfigHandler) GetRiskConfig(c *gin.Context) {
 	cfg, err := h.riskConfigService.GetRiskConfig(c.Request.Context())
 	if err != nil {

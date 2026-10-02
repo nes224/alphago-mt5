@@ -11,8 +11,6 @@ import (
 	"github.com/nes224/alphago-mt5/internal/core/ports"
 )
 
-// dailyRange เก็บ open/high/low ของ symbol สำหรับ "วันนี้" (ตามวันที่ปฏิทิน
-// ของเครื่อง) รีเซ็ตอัตโนมัติเมื่อข้ามวัน
 type dailyRange struct {
 	date string // "2006-01-02"
 	open float64
@@ -29,38 +27,13 @@ type QuantEngine struct {
 	lastTickMap   map[string]domain.Tick
 	windows       map[string]*Window
 	windowSize    int
-
-	// longTermWindows คือ Window เดียวกันแต่ยาวกว่ามาก ใช้เป็น proxy
-	// "higher timeframe trend" — longTermWindowSize <= 0 คือปิดการทำงานนี้
 	longTermWindows    map[string]*Window
 	longTermWindowSize int
-
-	// mtfFilter คือ Top-Down Multi-Timeframe Confirmation (Daily+H4 Bias ->
-	// M30/M15 Confirmation) — nil คือปิดการทำงานนี้ (ไม่ขวาง signal ใดๆ)
 	mtfFilter *MultiTimeframeFilter
-
-	// velocityWindows/volatilityWindows เก็บ "ประวัติของ PriceVelocity/StdDev
-	// เอง" (ไม่ใช่ราคา) ใช้คำนวณ Reversal Detection leading indicators —
-	// ขนาดเท่า windowSize หลัก ไม่ต้องตั้งแยก
 	velocityWindows   map[string]*Window
 	volatilityWindows map[string]*Window
-
-	// sizingWindows คือ TimeWindow แยกต่างหาก (M15, duration-based) ใช้วัด
-	// StdDev สำหรับคำนวณ SL/TP โดยเฉพาะ (RiskManager.CalculateOrder) — ตั้งใจ
-	// แยกจาก mtfFilter เพราะคนละหน้าที่กัน (mtfFilter ตัดสินทิศทาง, อันนี้วัด
-	// ความผันผวนสำหรับ sizing) ไม่อยากให้ปิด mtfFilter แล้วกระทบ sizing ไปด้วย
 	sizingWindows map[string]*TimeWindow
-
-	// atrCalculators คือ True Range (M5×14, Wilder-smoothed) ต่อ symbol — ดู
-	// atr.go — ทางเลือกใหม่แทน sizingWindows สำหรับ RiskManager.CalculateOrder
-	// (ปิดอยู่โดย default ผ่าน RiskConfig.UseATRForSizing)
 	atrCalculators map[string]*ATRCalculator
-
-	// cvdWindows/cvdTrendWindows/volumeProfiles คือ Order Flow (CVD) +
-	// Liquidity (Volume Profile/POC) ต่อ symbol — ดู cvd.go/volume_profile.go
-	// คำนวณและโชว์ผ่าน TickMetrics เสมอ (ไม่มี toggle ปิด) ส่วน lcFilter คือ
-	// gate ที่ใช้ค่าพวกนี้ตัดสิน ปิดอยู่โดย default (nil) จนกว่าจะดูค่าจริงจาก
-	// /api/v1/status สักพักก่อน — ดู SetLiquidityConfluenceFilter
 	cvdWindows      map[string]*RollingCVD
 	cvdTrendWindows map[string]*Window
 	volumeProfiles  map[string]*RollingVolumeProfile
@@ -95,39 +68,24 @@ func NewQuantEngine(bufferSize int, windowSize int) *QuantEngine {
 	}
 }
 
-// SetLongTermWindowSize เปิดใช้งาน Dual-Window Trend Filter — window ที่สองนี้
-// ควรยาวกว่า windowSize หลักมาก (เช่น 50-100 เท่า) เพื่อประมาณทิศทาง trend
-// ภาพใหญ่กว่า โดยไม่ต้องสร้าง candle aggregator จริง ค่า default คือ 0 (ปิด)
 func (e *QuantEngine) SetLongTermWindowSize(n int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.longTermWindowSize = n
 }
 
-// SetMultiTimeframeFilter เปิดใช้งาน Top-Down Multi-Timeframe Confirmation —
-// ไม่เรียกเลย (nil) คือปิดการทำงานนี้ไว้เหมือนเดิม (ค่า default)
 func (e *QuantEngine) SetMultiTimeframeFilter(f *MultiTimeframeFilter) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.mtfFilter = f
 }
 
-// SetSignalCooldown ตั้งระยะเวลาต่ำสุดระหว่าง signal ที่จะถูกส่งออกต่อ symbol
-// เป็น safety net กันไม่ให้ strategy ที่ threshold ยังไม่ผ่านการ tune ยิง order
-// รัวเกินไปในตลาดจริง (ค่า default คือ 0 = ปิดการทำงานนี้)
 func (e *QuantEngine) SetSignalCooldown(d time.Duration) {
 	e.cooldownMu.Lock()
 	defer e.cooldownMu.Unlock()
 	e.signalCooldown = d
 }
 
-// allowSignal คืน true ถ้ายังไม่มี signal ของ symbol นี้ถูกส่งออกภายในช่วง
-// cooldown ที่ตั้งไว้ และจะบันทึก at ไว้เป็น "signal ล่าสุด" ทันทีที่อนุญาต — ใช้
-// timestamp ของ tick เอง (at) ไม่ใช่ time.Now() เพื่อให้ historical-replay-safe
-// เหมือน TimeWindow/ATRCalculator (tick สดจริง at ~= time.Now() เสมออยู่แล้ว
-// ไม่กระทบ live แต่ backtest ที่ replay tick เป็นล้านตัวภายในไม่กี่วินาทีจริง
-// จะพังทันทีถ้าเทียบกับ wall clock — cooldown จะบล็อก signal เกือบทุกตัวเพราะ
-// เวลาจริงที่ผ่านไปแทบจะเป็นศูนย์เสมอ)
 func (e *QuantEngine) allowSignal(symbol string, at time.Time) bool {
 	e.cooldownMu.Lock()
 	defer e.cooldownMu.Unlock()
@@ -208,9 +166,6 @@ func (e *QuantEngine) calculateMetrics(tick domain.Tick) domain.TickMetrics {
 
 	window.Push(midPrice)
 
-	// Reversal Detection (leading indicators): slope ของ PriceVelocity/StdDev
-	// เอง ไม่ใช่สลับเครื่องหมายของราคา — compute ก่อน push ค่าปัจจุบันเข้าไป
-	// เหมือน window หลักด้านบน (slope สะท้อน "แนวโน้ม" ก่อนหน้า ไม่รวมค่าล่าสุด)
 	velocityWindow := e.getOrCreateVelocityWindow(tick.Symbol)
 	velocityTrendSlope := velocityWindow.Slope()
 	velocityWindow.Push(priceVelocity)
@@ -225,8 +180,6 @@ func (e *QuantEngine) calculateMetrics(tick domain.Tick) domain.TickMetrics {
 		ltWindow.Push(midPrice)
 	}
 
-	// Sizing volatility (M15) — สำหรับ RiskManager.CalculateOrder ใช้กำหนด
-	// SL/TP distance แทน StdDev ของ window 20 tick เดิมที่สั้นเกินไป
 	sizingWindow := e.getOrCreateSizingWindow(tick.Symbol)
 	sizingVolatility := sizingWindow.StdDev()
 	sizingWindow.Push(tick.Timestamp, midPrice)
@@ -234,10 +187,6 @@ func (e *QuantEngine) calculateMetrics(tick domain.Tick) domain.TickMetrics {
 	atrCalc := e.getOrCreateATR(tick.Symbol)
 	atrValue, atrReady := atrCalc.Value()
 	atrCalc.Push(tick.Timestamp, midPrice)
-
-	// CVD (rolling order flow) + Volume Profile/POC (rolling liquidity) — feed
-	// from volumeDelta (already computed above for VolumeVelocity), not raw
-	// tick.Volume. See RollingCVD/RollingVolumeProfile doc comments for why.
 	cvd := e.getOrCreateCVD(tick.Symbol)
 	cvdReady := cvd.Span() >= time.Duration(float64(cvdWindowDuration)*minDirectionWarmupFraction)
 	cvdValue := cvd.Value()
@@ -326,17 +275,10 @@ func (e *QuantEngine) ProcessTick(tick domain.Tick) domain.TickMetrics {
 
 	for _, s := range strategies {
 		if signal := s.OnTick(tick, metrics); signal != nil {
-			// เช็ค Multi-Timeframe Confirmation ก่อน cooldown — signal ที่สวน
-			// Bias ใหญ่ถูกบล็อกไปเลย ไม่ควรไปกิน cooldown slot ของ symbol นี้
-			// จนทำให้ signal ตัวถัดไป (ที่อาจจะไปถูกทาง) ต้องรอคอยอีก 30 วิ
 			if mtfFilter != nil && !mtfFilter.Allows(signal.Symbol, signal.Action) {
 				continue
 			}
 
-			// Order Flow/Liquidity Confluence Gate — เช็คจุดเดียวกับ mtfFilter
-			// ด้วยเหตุผลเดียวกัน (ไม่ควรไปกิน cooldown slot) — ปิดอยู่โดย
-			// default (lcFilter เป็น nil) จนกว่าจะเปิดเองผ่าน
-			// SetLiquidityConfluenceFilter
 			if lcFilter != nil && !lcFilter.Allows(metrics, signal.Action) {
 				continue
 			}
@@ -356,15 +298,6 @@ func (e *QuantEngine) ProcessTick(tick domain.Tick) domain.TickMetrics {
 	return metrics
 }
 
-// Backfill replays historical ticks (must be in chronological order, e.g.
-// from Store.TickHistorySince) through the exact same metric calculation
-// path live ticks use — warming up every rolling window (Multi-TF, ATR, CVD,
-// Volume Profile, sizing, daily range, lastTickMap deltas) — WITHOUT
-// dispatching to registered strategies or emitting signals, since these are
-// historical ticks, not something to act on "right now". Call this once at
-// startup, before Start(ctx)/PushTick begin feeding live ticks, so Multi-TF
-// etc. don't have to re-earn hours of warm-up on every restart even though
-// tick_history already has the data.
 func (e *QuantEngine) Backfill(ticks []domain.Tick) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -383,12 +316,6 @@ func (e *QuantEngine) GetLatestMetrics(symbol string) domain.TickMetrics {
 	return e.latestMetrics[symbol]
 }
 
-// GetMultiTimeframeState returns the live Bias/Confirmation state of the
-// Multi-Timeframe filter for a symbol (see MultiTimeframeState) — surfaced
-// via GET /api/v1/status so this can be watched live instead of trusted
-// blindly. Returns a zero-value state (HasData=false, both actions allowed)
-// if no filter is configured (SetMultiTimeframeFilter never called) or the
-// symbol has never been pushed a tick.
 func (e *QuantEngine) GetMultiTimeframeState(symbol string) domain.MultiTimeframeState {
 	e.mu.RLock()
 	f := e.mtfFilter
@@ -437,10 +364,6 @@ func (e *QuantEngine) getOrCreateVolatilityWindow(symbol string) *Window {
 	return w
 }
 
-// sizingWindowDuration คือความยาวของ TimeWindow ที่ใช้วัด volatility สำหรับ
-// position sizing — เลือก M15 เพราะยาวพอจะไม่ผันผวนตาม noise ของแต่ละ tick
-// (ต่างจาก windowSize หลักที่แค่ 20 tick) แต่ก็ไม่ยาวจน oversize SL (ต่างจาก
-// H4/Daily ที่ mtfFilter ใช้ ซึ่งยาวเกินไปสำหรับ trade ที่มักปิดภายในไม่กี่นาที)
 const sizingWindowDuration = 15 * time.Minute
 
 func (e *QuantEngine) getOrCreateSizingWindow(symbol string) *TimeWindow {
@@ -453,8 +376,6 @@ func (e *QuantEngine) getOrCreateSizingWindow(symbol string) *TimeWindow {
 	return w
 }
 
-// atrPeriodDuration/atrNumPeriods คือ M5×14 ตาม ROADMAP.md "ATR แทน
-// StdDev(M15)" — 14 period × 5 นาที = ~70 นาทีกว่า ATR จะ ready หลัง restart
 const (
 	atrPeriodDuration = 5 * time.Minute
 	atrNumPeriods     = 14
@@ -470,10 +391,6 @@ func (e *QuantEngine) getOrCreateATR(symbol string) *ATRCalculator {
 	return a
 }
 
-// cvdWindowDuration/volumeProfileDuration/volumeProfileBucketSize ยังไม่ผ่าน
-// backtest จริง เป็นค่าประมาณ — volumeProfileBucketSize ($ ต่อ bucket, ราคา
-// XAUUSDm ~4000) ราคาขยับทีละ ~$0.01 แต่โครงสร้างที่มีความหมายใกล้เคียง
-// $0.50-$1 มากกว่า ปรับทีหลังได้เมื่อมีข้อมูลจริงจาก /api/v1/status
 const (
 	cvdWindowDuration       = 15 * time.Minute
 	volumeProfileDuration   = 60 * time.Minute
@@ -510,17 +427,12 @@ func (e *QuantEngine) getOrCreateVolumeProfile(symbol string) *RollingVolumeProf
 	return p
 }
 
-// SetLiquidityConfluenceFilter เปิดใช้งาน Order Flow/Liquidity Confluence
-// Gate — ไม่เรียกเลย (nil) คือปิดการทำงานนี้ไว้ (ค่า default) — CVD/POC
-// metrics ยังคำนวณและโชว์ใน /api/v1/status เสมอไม่ว่าจะเปิด filter นี้หรือไม่
 func (e *QuantEngine) SetLiquidityConfluenceFilter(f *LiquidityConfluenceFilter) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.lcFilter = f
 }
 
-// getOrCreateLongTermWindow คืน nil ถ้า SetLongTermWindowSize ไม่เคยถูกเรียก
-// (ฟีเจอร์นี้ปิดอยู่โดย default)
 func (e *QuantEngine) getOrCreateLongTermWindow(symbol string) *Window {
 	if e.longTermWindowSize <= 0 {
 		return nil
@@ -535,9 +447,6 @@ func (e *QuantEngine) getOrCreateLongTermWindow(symbol string) *Window {
 	return w
 }
 
-// updateDailyRange อัปเดต open/high/low ของ "วันนี้" ให้ symbol นี้ รีเซ็ต
-// อัตโนมัติเมื่อ tick.Timestamp ข้ามวันที่ปฏิทิน (เทียบจากวันที่ของ tick เอง
-// ไม่ใช่เวลาเครื่อง Go เพื่อให้ตรงกับเวลาตลาดจริงที่ EA ส่งมา)
 func (e *QuantEngine) updateDailyRange(symbol string, midPrice float64, tickTime time.Time) (open, high, low float64) {
 	today := tickTime.Format("2006-01-02")
 

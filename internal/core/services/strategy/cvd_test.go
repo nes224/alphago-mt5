@@ -11,25 +11,21 @@ func TestRollingCVD_SignsVolumeByTickRule(t *testing.T) {
 	c := strategy.NewRollingCVD(1 * time.Hour)
 	base := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 
-	// First tick: no previous mid-price yet, defaults to +1 (buy).
 	c.Push(base, 100.0, 10)
 	if got := c.Value(); got != 10 {
 		t.Fatalf("expected CVD=10 after first (default buy) tick, got %f", got)
 	}
 
-	// Uptick -> buy.
 	c.Push(base.Add(1*time.Second), 101.0, 5)
 	if got := c.Value(); got != 15 {
 		t.Fatalf("expected CVD=15 after uptick(+5), got %f", got)
 	}
 
-	// Downtick -> sell.
 	c.Push(base.Add(2*time.Second), 99.0, 8)
 	if got := c.Value(); got != 7 {
 		t.Fatalf("expected CVD=7 after downtick(-8), got %f", got)
 	}
 
-	// Unchanged price -> inherit previous classification (sell).
 	c.Push(base.Add(3*time.Second), 99.0, 3)
 	if got := c.Value(); got != 4 {
 		t.Fatalf("expected CVD=4 after unchanged tick inheriting sell(-3), got %f", got)
@@ -41,8 +37,6 @@ func TestRollingCVD_TakesAbsOfVolumeDelta(t *testing.T) {
 	base := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 
 	c.Push(base, 100.0, 10)
-	// Uptick but with a negative volumeDelta (e.g. broker counter reset) —
-	// magnitude should still count as buy pressure, not flip the sign twice.
 	c.Push(base.Add(1*time.Second), 101.0, -5)
 	if got := c.Value(); got != 15 {
 		t.Fatalf("expected CVD=15 (abs(-5)=5 treated as buy), got %f", got)

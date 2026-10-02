@@ -16,17 +16,6 @@ import (
 	"github.com/nes224/alphago-mt5/internal/core/services/risk"
 )
 
-// newTestDB opens an isolated in-memory SQLite database per test — same GORM
-// models/queries as production Postgres, just without needing a live server
-// for unit tests. Production always uses database.Connect (Postgres).
-//
-// The DSN must be unique per test (via t.Name()): "cache=shared" is needed so
-// GORM's multiple pooled connections within one test all see the same
-// in-memory schema, but a literal "file::memory:" DSN is a shared-cache name
-// SQLite resolves identically across every call in the process — without a
-// unique name here, every test would silently share one database and leak
-// rows into each other (this bit WinRateBySession when it was added: an
-// earlier test's rows showed up as a phantom extra group).
 func newTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 

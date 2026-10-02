@@ -1,7 +1,6 @@
 package backtest
 
 import (
-	"strings"
 	"time"
 
 	"github.com/nes224/alphago-mt5/internal/core/domain"
@@ -250,12 +249,7 @@ func (r *Runner) closePosition(symbol string, pos openPosition, exitPrice float6
 	r.riskGuard.MarkPositionClosed(symbol)
 	r.riskGuard.UpdateAccountEquity(r.balance)
 
-	// Mirrors cmd/app/main.go's StrategyTag extraction exactly (substring of
-	// Reason before " (") so backtest and live win-rate stats line up.
-	strategyTag := pos.order.Reason
-	if idx := strings.Index(pos.order.Reason, " ("); idx >= 0 {
-		strategyTag = pos.order.Reason[:idx]
-	}
+	strategyTag := domain.StrategyTagFromReason(pos.order.Reason)
 
 	r.trades = append(r.trades, Trade{
 		Symbol:      symbol,

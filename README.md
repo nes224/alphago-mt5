@@ -26,13 +26,6 @@
 
 ---
 
-### 🟣 Phase 3: The Intelligence (`internal/ai`) — Claude AI Integration
-*Focus: LLM-based Sentiment Analysis and Adaptive Risk Controls.*
-
-- [ ] **Economic Data Ingestion:** Fetch economic calendar and financial market news APIs.
-- [ ] **Claude Prompt Pipeline:** Process financial headlines into structured sentiment scores (`RiskLevel: LOW | MED | HIGH`).
-- [ ] **Adaptive Parameter Adjuster:** Dynamically scale position sizes or halt trading during high-impact news events.
-- [ ] **Trade Guard Integration:** Final confirmation check via Claude API prior to executing high-exposure trades.
 
 ---
 
@@ -41,28 +34,4 @@
 - **Primary Language:** Go (Golang)
 - **Execution Platform:** MetaTrader 5 (MQL5)
 - **Messaging Protocol:** ZeroMQ / WebSockets
-- **AI / LLM:** Anthropic Claude API
 - **Data Interchange:** JSON / Protocol Buffers
-
-+-----------------------------------------------------------------------+
-|                    ฝั่งเรา (AlphaGo - Client)                         |
-|  - เขียนด้วย Go                                                       |
-|  - เป็นคนเริ่มยิง Request (สั่ง Buy/Sell)                                |
-|  - เปิด Channel/Goroutine รอฟัง Real-time Price Stream                 |
-+-----------------------------------------------------------------------+
-                                   ▲
-                                   │  Socket (ZeroMQ / TCP)
-                                   ▼
-+-----------------------------------------------------------------------+
-|                 ตัวกลาง (IPC API Gateway / Socket)                   |
-+-----------------------------------------------------------------------+
-                                   ▲
-                                   │  Socket (ZeroMQ / TCP)
-                                   ▼
-+-----------------------------------------------------------------------+
-|                 ฝั่ง MT5 (MT5 Terminal + Listener)                     |
-|  - ต้องเขียน Script / EA (Expert Advisor) ไปฝังไว้                     |
-|  - ทำหน้าที่เป็น Listener / Socket Server                               |
-|  - ดึงราคา real-time จาก MT5 ยิงกลับไปให้ Go                           |
-|  - รับคำสั่งเทรดมารันฟังก์ชัน Native `OrderSend()` ของ MT5             |
-+-----------------------------------------------------------------------+

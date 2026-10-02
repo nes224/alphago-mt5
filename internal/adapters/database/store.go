@@ -13,12 +13,8 @@ import (
 	"github.com/nes224/alphago-mt5/internal/core/services/risk"
 )
 
-// singleRowID คือ ID ตายตัวสำหรับตารางที่มีแค่แถวเดียวเสมอ (account_state,
-// risk_guard_state) — ใช้แทนการมีหลายแถวแล้วต้องมานั่งหาว่าแถวไหนคือ "ปัจจุบัน"
 const singleRowID = 1
 
-// Store รวม implementation ของ risk.StateStore, pipeline.SignalStore และ
-// account balance store ไว้ในที่เดียว ผูกกับ *gorm.DB ตัวเดียวกัน
 type Store struct {
 	db *gorm.DB
 }
@@ -61,9 +57,6 @@ func (s *Store) LoadRiskState() (risk.PersistedState, bool, error) {
 	}, true, nil
 }
 
-// SaveRiskState เขียน RiskGuardStateModel และ sync ตาราง open_position_symbols
-// ให้ตรงกับ state.OpenPositionSymbols ทั้งหมดในทรานแซคชันเดียว (ลบของเก่าทิ้ง
-// แล้วเขียนใหม่ทั้งหมด — ตารางเล็กมาก แค่ไม่กี่ symbol ไม่คุ้มจะ diff)
 func (s *Store) SaveRiskState(state risk.PersistedState) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		m := RiskGuardStateModel{
@@ -158,11 +151,6 @@ func (s *Store) SaveAccountBalance(balance float64) error {
 	return nil
 }
 
-// --- Trade Outcomes / Win-Rate per strategy ---
-
-// TradeOutcome คือผลลัพธ์จริงของ position ที่ปิดแล้ว หลัง attribute กลับไป
-// หา strategy ต้นเหตุแล้ว (ผ่าน StrategyTag) — main.go เป็นคนประกอบข้อมูลนี้
-// จากการจับคู่ ticket ที่ได้ตอน dispatch order กับ ticket ที่มาใน trade_closed event
 type TradeOutcome struct {
 	Symbol      string
 	StrategyTag string
@@ -191,10 +179,6 @@ func (s *Store) SaveTradeOutcome(o TradeOutcome) error {
 	return nil
 }
 
-// --- Pending Attributions (ticket -> signal Reason, แทนที่ ticketToReason sync.Map) ---
-
-// SaveAttribution บันทึกว่า ticket นี้เกิดจาก signal Reason ไหน — เรียกทันทีหลัง
-// dispatch order สำเร็จและได้ ticket กลับมาจาก MT5
 func (s *Store) SaveAttribution(ticket uint64, reason string) error {
 	m := PendingAttributionModel{Ticket: ticket, Reason: reason, CreatedAt: time.Now()}
 	if err := s.db.Create(&m).Error; err != nil {
@@ -203,9 +187,6 @@ func (s *Store) SaveAttribution(ticket uint64, reason string) error {
 	return nil
 }
 
-// LoadAndDeleteAttribution อ่าน Reason ของ ticket นี้แล้วลบทิ้งทันที (ใช้ครั้ง
-// เดียวตอน trade_closed event มาถึง) คืน ok=false ถ้าไม่เคยบันทึกไว้ (เช่น
-// service restart ระหว่าง position ยังเปิดค้างอยู่)
 func (s *Store) LoadAndDeleteAttribution(ticket uint64) (string, bool, error) {
 	var m PendingAttributionModel
 	err := s.db.First(&m, ticket).Error
@@ -226,9 +207,6 @@ func (s *Store) LoadAndDeleteAttribution(ticket uint64) (string, bool, error) {
 
 var _ pipeline.OutboxStore = (*Store)(nil)
 
-// CreatePendingOrder เขียนแถว PENDING ก่อนจริงๆ จะยิง order เข้า MT5 — ถ้า
-// service crash ระหว่างตัดสินใจส่งกับส่งจริง แถวนี้จะยังค้างเป็น PENDING ให้
-// ตรวจเจอตอน restart แทนที่จะหายไปเงียบๆ
 func (s *Store) CreatePendingOrder(order pipeline.PendingOrder) (uint, error) {
 	m := PendingOrderModel{
 		Symbol:     order.Symbol,
@@ -245,9 +223,6 @@ func (s *Store) CreatePendingOrder(order pipeline.PendingOrder) (uint, error) {
 	return m.ID, nil
 }
 
-// MarkOrderOutcome อัปเดตแถว Outbox หลังรู้ผลจริงจาก MT5 — status เป็น SENT
-// (มี ticket), FAILED (broker ปฏิเสธชัดเจน) หรือ UNKNOWN (error จาก transport
-// เอง เช่น timeout/EOF — ไม่รู้ว่าเข้าตลาดจริงไหม ต้องเช็คมือ)
 func (s *Store) MarkOrderOutcome(id uint, status string, ticket uint64, errMsg string) error {
 	updates := map[string]any{
 		"status":        status,
@@ -260,8 +235,6 @@ func (s *Store) MarkOrderOutcome(id uint, status string, ticket uint64, errMsg s
 	return nil
 }
 
-// PendingOrderRecord is a JSON-friendly view of a PendingOrderModel row for
-// monitoring (GET /api/v1/pending-orders).
 type PendingOrderRecord struct {
 	ID           uint      `json:"id"`
 	Symbol       string    `json:"symbol"`
@@ -275,8 +248,6 @@ type PendingOrderRecord struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
-// PendingOrders คืน order ล่าสุด (ทุก status) เรียงใหม่สุดก่อน — ใช้ตรวจ order
-// ที่ค้างเป็น PENDING/UNKNOWN จาก crash หรือ transport error ก่อนหน้า
 func (s *Store) PendingOrders(limit int) ([]PendingOrderRecord, error) {
 	var rows []PendingOrderModel
 	if err := s.db.Order("created_at DESC").Limit(limit).Find(&rows).Error; err != nil {
@@ -301,8 +272,6 @@ func (s *Store) PendingOrders(limit int) ([]PendingOrderRecord, error) {
 	return out, nil
 }
 
-// UnresolvedPendingOrders คืนเฉพาะแถวที่ยังไม่รู้ผลชัดเจน (PENDING ค้างจาก
-// crash หรือ UNKNOWN จาก transport error) — ใช้ log เตือนตอน startup
 func (s *Store) UnresolvedPendingOrders() ([]PendingOrderRecord, error) {
 	var rows []PendingOrderModel
 	if err := s.db.Where("status IN ?", []string{PendingOrderStatusPending, PendingOrderStatusUnknown}).
@@ -386,9 +355,6 @@ type SessionWinRateStat struct {
 	TotalProfit float64 `json:"total_profit"`
 }
 
-// WinRateBySession คำนวณ win-rate สะสมของแต่ละ market session จาก
-// trade_outcomes ทั้งหมด — ให้ดูได้ว่า strategy ชุดนี้เวิร์กดีช่วงไหนของวัน
-// (เช่น LiquiditySweepStrategy อาจเวิร์กช่วง Asian ที่ liquidity บาง)
 func (s *Store) WinRateBySession() ([]SessionWinRateStat, error) {
 	type row struct {
 		Session     string
@@ -425,12 +391,8 @@ func (s *Store) WinRateBySession() ([]SessionWinRateStat, error) {
 	return out, nil
 }
 
-// --- Risk Config (risk policy ที่ผู้ใช้ตั้งเอง, แยกจาก account balance) ---
-
 var _ services.RiskConfigStore = (*Store)(nil)
 
-// SaveRiskConfig เขียนทับ risk_config แถวเดียว (ID=1) ทั้งหมด — เรียกตอน
-// PUT /api/v1/risk/config หลัง validate ผ่านแล้ว
 func (s *Store) SaveRiskConfig(cfg domain.RiskConfig) error {
 	m := RiskConfigModel{
 		ID:                   singleRowID,
@@ -452,8 +414,6 @@ func (s *Store) SaveRiskConfig(cfg domain.RiskConfig) error {
 	return nil
 }
 
-// LoadRiskConfig คืน ok=false ถ้ายังไม่เคยตั้งค่าไว้เลย (ยังไม่เคยเรียก PUT
-// /api/v1/risk/config สักครั้ง) — ให้ main.go seed จาก app.env แทนตอน startup
 func (s *Store) LoadRiskConfig() (domain.RiskConfig, bool, error) {
 	var m RiskConfigModel
 	err := s.db.First(&m, singleRowID).Error
@@ -479,12 +439,6 @@ func (s *Store) LoadRiskConfig() (domain.RiskConfig, bool, error) {
 	}, true, nil
 }
 
-// --- Tick History (ราก auxiliary สำหรับ Order Flow/ATR/backtest ในอนาคต) ---
-
-// SaveTickHistoryBatch insert tick หลายตัวพร้อมกันในคำสั่งเดียว (CreateInBatches
-// แบ่งเป็นชุดละ 500 แถว กัน query เดียวใหญ่เกินไป) — เรียกจาก background
-// recorder goroutine เท่านั้น ไม่เรียกทีละ tick เด็ดขาด (1.7M+ tick/วัน insert
-// ทีละแถวจะหนักเกินจำเป็นมาก)
 func (s *Store) SaveTickHistoryBatch(ticks []domain.Tick) error {
 	if len(ticks) == 0 {
 		return nil
@@ -507,11 +461,6 @@ func (s *Store) SaveTickHistoryBatch(ticks []domain.Tick) error {
 	return nil
 }
 
-// TickHistorySince คืน tick ทั้งหมดของ symbol นี้ตั้งแต่ since เป็นต้นมา
-// เรียงเก่า→ใหม่ — ใช้ query ตามช่วงเวลา (ไม่ใช่ limit แบบนับแถว) เพราะ
-// ต้องการ "ย้อนหลัง N ชั่วโมง" ที่แน่นอน ไม่ว่า tick rate จริงจะถี่/ห่างแค่ไหน
-// (ดู QuantEngine.Backfill — ใช้ผลลัพธ์นี้ warm up Multi-TF/ATR/CVD/Volume
-// Profile ตอน startup แทนที่จะเริ่มจากศูนย์ทุกครั้งที่ restart)
 func (s *Store) TickHistorySince(symbol string, since time.Time) ([]domain.Tick, error) {
 	var rows []TickHistoryModel
 	if err := s.db.Where("symbol = ? AND timestamp >= ?", symbol, since).Order("timestamp ASC").Find(&rows).Error; err != nil {
@@ -531,9 +480,6 @@ func (s *Store) TickHistorySince(symbol string, since time.Time) ([]domain.Tick,
 	return out, nil
 }
 
-// RecentTickHistory คืน tick ล่าสุดของ symbol นี้ เรียงเก่า→ใหม่ (ลำดับเวลา
-// ปกติ พร้อมใช้ replay ตรงๆ) — ยังไม่มีใครเรียกใช้จริงตอนนี้ เตรียมไว้สำหรับ
-// ATR/backtest ที่จะทำต่อ
 func (s *Store) RecentTickHistory(symbol string, limit int) ([]domain.Tick, error) {
 	var rows []TickHistoryModel
 	if err := s.db.Where("symbol = ?", symbol).Order("timestamp DESC").Limit(limit).Find(&rows).Error; err != nil {

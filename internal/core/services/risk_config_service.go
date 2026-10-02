@@ -11,17 +11,11 @@ import (
 
 var ErrRiskConfigNotSet = errors.New("risk config has not been set yet")
 
-// RiskConfigStore is the persistence port RiskConfigService needs — the
-// adapter (internal/adapters/database) implements this, RiskConfigService
-// never imports the database package directly (Hexagonal Architecture).
 type RiskConfigStore interface {
 	SaveRiskConfig(cfg domain.RiskConfig) error
 	LoadRiskConfig() (domain.RiskConfig, bool, error)
 }
 
-// RiskConfigService validates a risk policy change and applies it live to
-// RiskManager/RiskGuard (no restart needed) before persisting it, so the
-// next restart picks up the same values instead of falling back to app.env.
 type RiskConfigService struct {
 	store       RiskConfigStore
 	riskManager *risk.RiskManager
@@ -32,10 +26,6 @@ func NewRiskConfigService(store RiskConfigStore, riskManager *risk.RiskManager, 
 	return &RiskConfigService{store: store, riskManager: riskManager, riskGuard: riskGuard}
 }
 
-// SetRiskConfig validates req, applies it live, then persists it. The live
-// apply happens before the DB write deliberately — if persistence fails the
-// in-memory values are already correct and a retry of just the write is safe
-// (re-apply is idempotent).
 func (s *RiskConfigService) SetRiskConfig(ctx context.Context, req domain.RiskConfig) (*domain.RiskConfig, error) {
 	if err := validateRiskConfig(req); err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
@@ -51,9 +41,6 @@ func (s *RiskConfigService) SetRiskConfig(ctx context.Context, req domain.RiskCo
 	return &req, nil
 }
 
-// GetRiskConfig returns the last persisted risk config, or ErrRiskConfigNotSet
-// if PUT /api/v1/risk/config has never been called (still running on the
-// app.env seed values from startup).
 func (s *RiskConfigService) GetRiskConfig(ctx context.Context) (*domain.RiskConfig, error) {
 	cfg, ok, err := s.store.LoadRiskConfig()
 	if err != nil {
@@ -65,9 +52,6 @@ func (s *RiskConfigService) GetRiskConfig(ctx context.Context) (*domain.RiskConf
 	return &cfg, nil
 }
 
-// validateRiskConfig enforces sane bounds so a fat-fingered request can't
-// silently wreck live risk management (e.g. risk_per_trade_percent=5 would
-// mean risking 500% of equity per trade).
 func validateRiskConfig(req domain.RiskConfig) error {
 	switch {
 	case req.RiskPerTradePercent <= 0 || req.RiskPerTradePercent > 1:

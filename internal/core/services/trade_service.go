@@ -37,9 +37,6 @@ func (s *TradeService) ExecuteTrade(ctx context.Context, req domain.TradeRequest
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	// Only new entries (BUY/SELL) are subject to risk limits — CLOSE/MODIFY
-	// must always be allowed through so a user can still cut risk manually
-	// while the circuit breaker is tripped.
 	if req.Action == domain.ActionBuy || req.Action == domain.ActionSell {
 		if req.Volume > MaxAllowedVolume {
 			return nil, fmt.Errorf("risk check failed: %w", ErrRiskGuardTriggered)

@@ -12,9 +12,6 @@ import (
 	"github.com/nes224/alphago-mt5/internal/core/services/risk"
 )
 
-// fakeEngine is a minimal ports.QuantEngine so ExecutionRouter can be tested
-// in isolation, driving SignalChannel() directly instead of going through a
-// real QuantEngine + strategies.
 type fakeEngine struct {
 	signalCh chan domain.OrderSignal
 	metrics  domain.TickMetrics
@@ -112,9 +109,6 @@ func TestExecutionRouter_BlockedByRiskGuard_RecordedAndNotDispatched(t *testing.
 	}
 }
 
-// fakeOutboxStore is a minimal, thread-safe pipeline.OutboxStore recording
-// what ExecutionRouter writes/updates, so tests can assert on it without a
-// real database.
 type fakeOutboxStore struct {
 	mu       sync.Mutex
 	nextID   uint
@@ -212,6 +206,66 @@ func TestExecutionRouter_DroppedForFullQueue_MarksOutboxRowFailed(t *testing.T) 
 	outcome, ok := outbox.outcomes[1]
 	if !ok || outcome.status != pipeline.OutboxStatusFailed {
 		t.Errorf("Expected outbox row 1 marked FAILED, got %+v (ok=%v)", outcome, ok)
+	}
+}
+
+func TestExecutionRouter_BlockedByWinRateGate_RecordedAndNotDispatched(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	engine := newFakeEngine(domain.TickMetrics{StdDev: 1.0, Mean: 2600.0, Ask: 2601.0, Bid: 2600.8, Spread: 0.2})
+	riskMgr := risk.NewRiskManager(0.01, 10000.0, 0.01, 1.0, 0.01, 100.0, 2.0, 1.75, false)
+
+	gate := risk.NewWinRateGate(0.50, 1)
+	gate.UpdateStats([]risk.StrategyWinRate{
+		{StrategyTag: "BAD_STRAT", Wins: 1, Losses: 9, TotalTrades: 10, WinRate: 0.10},
+	})
+
+	orderSink := make(chan risk.PreparedOrder, 10)
+	router := pipeline.NewExecutionRouter(engine, riskMgr, nil, orderSink, 1)
+	router.SetWinRateGate(gate)
+	router.Start(ctx)
+
+	engine.signalCh <- domain.OrderSignal{Symbol: "XAUUSDm", Action: domain.SignalAction(domain.ActionBuy), Reason: "BAD_STRAT (foo)"}
+
+	recent := waitForHistory(t, router, 1)
+	if recent[0].Status != pipeline.SignalStatusRejectedWinRate {
+		t.Errorf("Expected status %s, got %s", pipeline.SignalStatusRejectedWinRate, recent[0].Status)
+	}
+
+	select {
+	case order := <-orderSink:
+		t.Fatalf("Expected no order to be dispatched, got: %+v", order)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestExecutionRouter_AllowedByWinRateGate_Dispatched(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	engine := newFakeEngine(domain.TickMetrics{StdDev: 1.0, Mean: 2600.0, Ask: 2601.0, Bid: 2600.8, Spread: 0.2})
+	riskMgr := risk.NewRiskManager(0.01, 10000.0, 0.01, 1.0, 0.01, 100.0, 2.0, 1.75, false)
+
+	gate := risk.NewWinRateGate(0.50, 1)
+	gate.UpdateStats([]risk.StrategyWinRate{
+		{StrategyTag: "GOOD_STRAT", Wins: 8, Losses: 2, TotalTrades: 10, WinRate: 0.80},
+	})
+
+	orderSink := make(chan risk.PreparedOrder, 10)
+	router := pipeline.NewExecutionRouter(engine, riskMgr, nil, orderSink, 1)
+	router.SetWinRateGate(gate)
+	router.Start(ctx)
+
+	engine.signalCh <- domain.OrderSignal{Symbol: "XAUUSDm", Action: domain.SignalAction(domain.ActionBuy), Reason: "GOOD_STRAT (foo)"}
+
+	select {
+	case order := <-orderSink:
+		if order.Symbol != "XAUUSDm" {
+			t.Errorf("Expected order for XAUUSDm, got %s", order.Symbol)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Timeout waiting for order on orderSink")
 	}
 }
 

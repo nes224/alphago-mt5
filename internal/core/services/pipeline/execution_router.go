@@ -17,13 +17,10 @@ const (
 	SignalStatusDispatched        = "DISPATCHED"
 	SignalStatusRejectedSizing    = "REJECTED_SIZING"
 	SignalStatusRejectedRiskGuard = "REJECTED_RISK_GUARD"
+	SignalStatusRejectedWinRate   = "REJECTED_WIN_RATE"
 	SignalStatusDroppedQueueFull  = "DROPPED_QUEUE_FULL"
 )
 
-// SignalRecord is a lightweight, JSON-friendly snapshot of a signal the
-// ExecutionRouter processed, kept in memory (and optionally persisted via a
-// SignalStore) for monitoring/debugging (e.g. GET /api/v1/signals) without
-// having to grep logs.
 type SignalRecord struct {
 	Symbol    string    `json:"symbol"`
 	Action    string    `json:"action"`
@@ -33,16 +30,10 @@ type SignalRecord struct {
 	LotSize   float64   `json:"lot_size,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 }
-
-// SignalStore เป็น port ที่ adapter ชั้นนอก (เช่น internal/adapters/database)
-// ต้อง implement เพื่อให้ประวัติ signal รอดจาก restart แทน in-memory ring buffer ล้วนๆ
 type SignalStore interface {
 	SaveSignal(rec SignalRecord) error
 	RecentSignals(limit int) ([]SignalRecord, error)
 }
-
-// PendingOrder คือข้อมูลที่จำเป็นต้องเขียนลง Outbox ก่อนจริงๆ จะยิง order เข้า
-// MT5 — แยกจาก risk.PreparedOrder เพื่อไม่ให้ package risk ต้องรู้จัก storage
 type PendingOrder struct {
 	Symbol     string
 	Action     string
@@ -52,15 +43,10 @@ type PendingOrder struct {
 	Reason     string
 }
 
-// สถานะ Outbox — ต้องตรงกับค่า string ของ database.PendingOrderStatus* (เก็บ
-// เป็น string ธรรมดาไม่ผูก type กับ adapter ชั้นนอกตามหลัก Hexagonal Architecture)
 const (
 	OutboxStatusFailed = "FAILED"
 )
 
-// OutboxStore เป็น port ที่ adapter ชั้นนอกต้อง implement เพื่อรองรับ Outbox
-// Pattern — เขียนแถว PENDING ไว้ก่อนส่งจริง กัน order ที่ "ตัดสินใจจะส่งแล้ว"
-// หายไปเงียบๆ ถ้า service crash ระหว่างตัดสินใจกับส่งจริงเข้า MT5
 type OutboxStore interface {
 	CreatePendingOrder(order PendingOrder) (id uint, err error)
 	MarkOrderOutcome(id uint, status string, ticket uint64, errMsg string) error
@@ -74,21 +60,24 @@ type ExecutionRouter struct {
 	workerCount int
 	store       SignalStore
 	outbox      OutboxStore
+	winRateGate *risk.WinRateGate
 
 	historyMu sync.Mutex
 	history   []SignalRecord
 }
 
-// AttachStore ผูก SignalStore เข้ากับ ExecutionRouter — จากนั้น RecentSignals()
-// จะอ่านจาก store แทน in-memory ring buffer (ทำให้ประวัติรอดจาก restart)
+func (r *ExecutionRouter) SetWinRateGate(g *risk.WinRateGate) {
+	r.historyMu.Lock()
+	defer r.historyMu.Unlock()
+	r.winRateGate = g
+}
+
 func (r *ExecutionRouter) AttachStore(store SignalStore) {
 	r.historyMu.Lock()
 	defer r.historyMu.Unlock()
 	r.store = store
 }
 
-// AttachOutboxStore ผูก OutboxStore เข้ากับ ExecutionRouter — ถ้าไม่ผูกไว้
-// (nil) จะข้ามการเขียน outbox row ไปเลย (ทำงานเหมือนเดิมก่อนมี Outbox Pattern)
 func (r *ExecutionRouter) AttachOutboxStore(store OutboxStore) {
 	r.historyMu.Lock()
 	defer r.historyMu.Unlock()
@@ -152,9 +141,21 @@ func (r *ExecutionRouter) Start(ctx context.Context) {
 						}
 					}
 
-					// เขียน outbox row ก่อนจริงๆ จะ push เข้า orderSink — ถ้า service
-					// crash หลังจุดนี้แต่ก่อน sender goroutine ยิงเข้า MT5 จริง จะยังมี
-					// แถว PENDING ค้างให้ตรวจเจอตอน restart แทนที่จะหายไปเงียบๆ
+					r.historyMu.Lock()
+					winRateGate := r.winRateGate
+					r.historyMu.Unlock()
+					if winRateGate != nil && !winRateGate.Allows(preparedOrder.Reason) {
+						log.Warn().Int("worker", workerID).Str("symbol", signal.Symbol).Str("reason", preparedOrder.Reason).Msg("WIN RATE GATE BLOCKED signal")
+						r.recordSignal(SignalRecord{
+							Symbol:  preparedOrder.Symbol,
+							Action:  string(preparedOrder.Action),
+							Status:  SignalStatusRejectedWinRate,
+							Reason:  preparedOrder.Reason,
+							LotSize: preparedOrder.LotSize,
+						})
+						continue
+					}
+
 					r.historyMu.Lock()
 					outbox := r.outbox
 					r.historyMu.Unlock()
@@ -197,9 +198,6 @@ func (r *ExecutionRouter) Start(ctx context.Context) {
 						})
 					default:
 						log.Warn().Int("worker", workerID).Str("symbol", preparedOrder.Symbol).Msg("Order Sink Channel is full, dropping order")
-						// Order ไม่มีทางไปถึง MT5 แน่นอน (channel เต็ม ไม่ใช่ crash) — ปิด
-						// outbox row เป็น FAILED ทันที กัน restart ครั้งถัดไปเข้าใจผิดว่า
-						// เป็น order ค้างที่ต้องเช็คมือ
 						if outbox != nil && preparedOrder.OutboxID != 0 {
 							if err := outbox.MarkOrderOutcome(preparedOrder.OutboxID, OutboxStatusFailed, 0, "dropped: order sink queue full"); err != nil {
 								log.Warn().Int("worker", workerID).Err(err).Msg("[ExecutionRouter] failed to mark dropped outbox row as failed")
@@ -219,9 +217,6 @@ func (r *ExecutionRouter) Start(ctx context.Context) {
 	}
 }
 
-// recordSignal appends a record to the bounded in-memory history (evicting
-// the oldest entry once at capacity), and persists it via SignalStore if one
-// is attached — the DB write happens outside the history lock since it's I/O.
 func (r *ExecutionRouter) recordSignal(rec SignalRecord) {
 	rec.Timestamp = time.Now()
 
@@ -240,9 +235,6 @@ func (r *ExecutionRouter) recordSignal(rec SignalRecord) {
 	}
 }
 
-// RecentSignals returns the most recently processed signals, newest first.
-// Prefers the attached SignalStore (durable across restarts) when present,
-// falling back to the in-memory ring buffer otherwise.
 func (r *ExecutionRouter) RecentSignals() []SignalRecord {
 	r.historyMu.Lock()
 	store := r.store

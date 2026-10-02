@@ -7,12 +7,8 @@ import (
 	"time"
 )
 
-// barTimeLayout matches the CSV export format "2006.01.02 15:04" used by
-// the XAU_{1m,5m,...}_data.csv files this package was built to replay.
 const barTimeLayout = "2006.01.02 15:04"
 
-// Bar is one OHLCV row from a semicolon-delimited CSV export
-// ("Date;Open;High;Low;Close;Volume").
 type Bar struct {
 	Time   time.Time
 	Open   float64
@@ -22,9 +18,6 @@ type Bar struct {
 	Volume int64
 }
 
-// ParseBarLine parses one semicolon-delimited OHLCV row. It does not expect
-// or skip the header row ("Date;Open;High;Low;Close;Volume") -- callers
-// (e.g. StreamOHLCVCSV) are responsible for not feeding it the header.
 func ParseBarLine(line string) (Bar, error) {
 	fields := strings.Split(line, ";")
 	if len(fields) != 6 {

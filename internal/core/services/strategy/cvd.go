@@ -2,20 +2,6 @@ package strategy
 
 import "time"
 
-// RollingCVD tracks Cumulative Volume Delta over a rolling time window: each
-// tick is classified buy/sell aggressor via the tick rule (uptick in
-// mid-price = buy, downtick = sell, unchanged = inherit the previous
-// classification), its volume is signed accordingly, and only volume from
-// ticks within `duration` of the latest tick counts — evicted the same way
-// TimeWindow evicts by wall-clock time (each point's own timestamp, not
-// time.Now()), but keeping a running sum instead of mean/stddev so eviction
-// stays O(1) amortized per tick instead of rescanning.
-//
-// Feed this |volumeDelta| (the "how much happened on this tick" quantity
-// QuantEngine.calculateMetrics already computes) — NOT raw tick.Volume.
-// tick.Volume is broker-side cumulative (same shape as OpenInterest, see the
-// comment on domain.TickMetrics.VolumeDelta); using it directly would make
-// CVD a running total of a running total.
 type RollingCVD struct {
 	duration time.Duration
 	points   []cvdPoint
@@ -35,8 +21,6 @@ func NewRollingCVD(duration time.Duration) *RollingCVD {
 	return &RollingCVD{duration: duration, lastSign: 1}
 }
 
-// Push classifies the tick at (t, midPrice) via the tick rule and adds
-// sign * |volumeDelta| to the rolling sum.
 func (c *RollingCVD) Push(t time.Time, midPrice float64, volumeDelta int64) {
 	sign := c.lastSign
 	if c.hasLastMid {
@@ -68,15 +52,10 @@ func (c *RollingCVD) Push(t time.Time, midPrice float64, volumeDelta int64) {
 	}
 }
 
-// Value returns the current rolling Cumulative Volume Delta (positive = net
-// buy pressure, negative = net sell pressure, over the configured duration).
 func (c *RollingCVD) Value() float64 { return c.sum }
 
 func (c *RollingCVD) Size() int { return len(c.points) }
 
-// Span returns the wall-clock time covered by currently buffered points —
-// same purpose as TimeWindow.Span(): tells "CVD genuinely represents the
-// configured rolling window" apart from "just started, not warmed up yet".
 func (c *RollingCVD) Span() time.Duration {
 	if len(c.points) < 2 {
 		return 0
