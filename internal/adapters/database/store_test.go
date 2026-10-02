@@ -1,6 +1,7 @@
 package database_test
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -18,10 +19,19 @@ import (
 // newTestDB opens an isolated in-memory SQLite database per test — same GORM
 // models/queries as production Postgres, just without needing a live server
 // for unit tests. Production always uses database.Connect (Postgres).
+//
+// The DSN must be unique per test (via t.Name()): "cache=shared" is needed so
+// GORM's multiple pooled connections within one test all see the same
+// in-memory schema, but a literal "file::memory:" DSN is a shared-cache name
+// SQLite resolves identically across every call in the process — without a
+// unique name here, every test would silently share one database and leak
+// rows into each other (this bit WinRateBySession when it was added: an
+// earlier test's rows showed up as a phantom extra group).
 func newTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{
+	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	if err != nil {
@@ -37,6 +47,7 @@ func newTestDB(t *testing.T) *gorm.DB {
 		&database.PendingAttributionModel{},
 		&database.PendingOrderModel{},
 		&database.RiskConfigModel{},
+		&database.TickHistoryModel{},
 	); err != nil {
 		t.Fatalf("failed to auto-migrate schema: %v", err)
 	}
@@ -337,14 +348,15 @@ func TestStore_RiskConfig_RoundTrip(t *testing.T) {
 	}
 
 	cfg := domain.RiskConfig{
-		RiskPerTradePercent: 0.02,
-		MinLotSize:          0.01,
-		MaxLotSize:          0.1,
-		MinSLDistance:       3.0,
-		MaxSLDistance:       20.0,
-		MaxDailyLossPercent: 0.05,
-		MaxOpenPositions:    3,
-		MaxSpreadPips:       4.0,
+		RiskPerTradePercent:  0.02,
+		MinLotSize:           0.01,
+		MaxLotSize:           0.1,
+		MinSLDistance:        3.0,
+		MaxSLDistance:        20.0,
+		VolatilityMultiplier: 2.0,
+		MaxDailyLossPercent:  0.05,
+		MaxOpenPositions:     3,
+		MaxSpreadPips:        4.0,
 	}
 	if err := store.SaveRiskConfig(cfg); err != nil {
 		t.Fatalf("unexpected error saving risk config: %v", err)
@@ -368,5 +380,118 @@ func TestStore_RiskConfig_RoundTrip(t *testing.T) {
 	got, _, _ = store.LoadRiskConfig()
 	if got.MaxOpenPositions != 1 {
 		t.Errorf("Expected updated MaxOpenPositions=1, got %d", got.MaxOpenPositions)
+	}
+}
+
+func TestStore_WinRateBySession_ComputesPerSessionStats(t *testing.T) {
+	store := database.NewStore(newTestDB(t))
+
+	outcomes := []database.TradeOutcome{
+		{Symbol: "XAUUSDm", StrategyTag: "LIQUIDITY_SWEEP_FADE_BUY", Ticket: 1, Profit: 5.0, IsWin: true, Session: domain.SessionAsian, Timestamp: time.Now()},
+		{Symbol: "XAUUSDm", StrategyTag: "LIQUIDITY_SWEEP_FADE_SELL", Ticket: 2, Profit: -2.0, IsWin: false, Session: domain.SessionAsian, Timestamp: time.Now()},
+		{Symbol: "XAUUSDm", StrategyTag: "VOLUME_EXPANSION_BUY", Ticket: 3, Profit: 10.0, IsWin: true, Session: domain.SessionLondonNYOverlap, Timestamp: time.Now()},
+	}
+	for _, o := range outcomes {
+		if err := store.SaveTradeOutcome(o); err != nil {
+			t.Fatalf("unexpected error saving outcome: %v", err)
+		}
+	}
+
+	stats, err := store.WinRateBySession()
+	if err != nil {
+		t.Fatalf("unexpected error computing win rate by session: %v", err)
+	}
+	if len(stats) != 2 {
+		t.Fatalf("Expected stats for 2 distinct sessions, got %d: %+v", len(stats), stats)
+	}
+
+	bySession := make(map[string]database.SessionWinRateStat)
+	for _, s := range stats {
+		bySession[s.Session] = s
+	}
+
+	asian, ok := bySession[domain.SessionAsian]
+	if !ok {
+		t.Fatal("Expected stats for ASIAN session")
+	}
+	if asian.Wins != 1 || asian.Losses != 1 || asian.TotalTrades != 2 {
+		t.Errorf("Expected 1 win / 1 loss / 2 total for ASIAN, got %+v", asian)
+	}
+
+	overlap, ok := bySession[domain.SessionLondonNYOverlap]
+	if !ok {
+		t.Fatal("Expected stats for LONDON_NY_OVERLAP session")
+	}
+	if overlap.Wins != 1 || overlap.Losses != 0 || overlap.WinRate != 1.0 {
+		t.Errorf("Expected 1 win / 0 loss / 100%% win rate for LONDON_NY_OVERLAP, got %+v", overlap)
+	}
+}
+
+func TestStore_SaveTickHistoryBatch_RoundTrip(t *testing.T) {
+	store := database.NewStore(newTestDB(t))
+
+	empty, err := store.RecentTickHistory("XAUUSDm", 10)
+	if err != nil {
+		t.Fatalf("unexpected error listing empty tick history: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("expected no tick history yet, got %+v", empty)
+	}
+
+	base := time.Now()
+	ticks := []domain.Tick{
+		{Symbol: "XAUUSDm", Bid: 4190.0, Ask: 4190.2, Volume: 3, Timestamp: base},
+		{Symbol: "XAUUSDm", Bid: 4190.1, Ask: 4190.3, Volume: 5, Timestamp: base.Add(1 * time.Second)},
+		{Symbol: "EURUSDm", Bid: 1.08, Ask: 1.0802, Volume: 2, Timestamp: base}, // different symbol, must not leak into XAUUSDm query
+	}
+	if err := store.SaveTickHistoryBatch(ticks); err != nil {
+		t.Fatalf("unexpected error saving tick history batch: %v", err)
+	}
+
+	got, err := store.RecentTickHistory("XAUUSDm", 10)
+	if err != nil {
+		t.Fatalf("unexpected error listing tick history: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 XAUUSDm ticks, got %d: %+v", len(got), got)
+	}
+	// Oldest first.
+	if got[0].Bid != 4190.0 || got[1].Bid != 4190.1 {
+		t.Errorf("expected ticks ordered oldest-first, got %+v", got)
+	}
+}
+
+func TestStore_TickHistorySince_FiltersByTimeNotCount(t *testing.T) {
+	store := database.NewStore(newTestDB(t))
+	base := time.Now()
+
+	ticks := []domain.Tick{
+		{Symbol: "XAUUSDm", Bid: 4100.0, Volume: 1, Timestamp: base.Add(-2 * time.Hour)}, // too old, must be excluded
+		{Symbol: "XAUUSDm", Bid: 4190.0, Volume: 3, Timestamp: base.Add(-30 * time.Minute)},
+		{Symbol: "XAUUSDm", Bid: 4190.1, Volume: 5, Timestamp: base.Add(-10 * time.Minute)},
+		{Symbol: "EURUSDm", Bid: 1.08, Volume: 2, Timestamp: base.Add(-10 * time.Minute)}, // different symbol, must not leak in
+	}
+	if err := store.SaveTickHistoryBatch(ticks); err != nil {
+		t.Fatalf("unexpected error saving tick history batch: %v", err)
+	}
+
+	since := base.Add(-1 * time.Hour)
+	got, err := store.TickHistorySince("XAUUSDm", since)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 XAUUSDm ticks within the last hour, got %d: %+v", len(got), got)
+	}
+	if got[0].Bid != 4190.0 || got[1].Bid != 4190.1 {
+		t.Errorf("expected ticks ordered oldest-first, got %+v", got)
+	}
+}
+
+func TestStore_SaveTickHistoryBatch_EmptySliceIsNoop(t *testing.T) {
+	store := database.NewStore(newTestDB(t))
+
+	if err := store.SaveTickHistoryBatch(nil); err != nil {
+		t.Fatalf("unexpected error on empty batch: %v", err)
 	}
 }

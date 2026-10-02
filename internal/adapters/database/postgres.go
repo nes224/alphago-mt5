@@ -9,7 +9,7 @@ import (
 )
 
 // Connect เปิด connection ไปยัง PostgreSQL และรัน AutoMigrate ให้ schema
-// ทั้ง 8 ตารางครบก่อนคืนค่ากลับ — เรียกครั้งเดียวตอน service start
+// ทั้ง 9 ตารางครบก่อนคืนค่ากลับ — เรียกครั้งเดียวตอน service start
 func Connect(dsn string) (*gorm.DB, error) {
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Warn),
@@ -27,6 +27,7 @@ func Connect(dsn string) (*gorm.DB, error) {
 		&PendingAttributionModel{},
 		&PendingOrderModel{},
 		&RiskConfigModel{},
+		&TickHistoryModel{},
 	); err != nil {
 		return nil, fmt.Errorf("failed to auto-migrate schema: %w", err)
 	}

@@ -295,7 +295,7 @@ func TestQuantEngine_PipelineIntegration(t *testing.T) {
 	volumeStrategy := strategy.NewVolumeExpansionStrategy(symbol, 1.5, 5.0, 0.1, 0)
 	quantEngine.RegisterStrategy(volumeStrategy)
 
-	riskManager := risk.NewRiskManager(0.01, 10000.0, 0.01, 1.00, 0.01, 100.0)
+	riskManager := risk.NewRiskManager(0.01, 10000.0, 0.01, 1.00, 0.01, 100.0, 2.0, 1.75, false)
 	riskGuard := risk.NewRiskGuard(risk.RiskGuardConfig{
 		MaxDailyLossPercent: 0.03,
 		MaxOpenPositions:    5,
@@ -437,6 +437,42 @@ func TestQuantEngine_SignalCooldown_SuppressesRapidSignals(t *testing.T) {
 	}
 }
 
+// TestQuantEngine_SignalCooldown_TracksTickTimeNotWallClock guards against a
+// real bug found while designing the backtest engine: allowSignal used to
+// compare against time.Now() instead of the tick's own timestamp. Live, a
+// tick's Timestamp is always ~= time.Now() so this never showed up — but a
+// backtest replays years of historical ticks in seconds of real wall-clock
+// time, so the old code would see almost no real time elapse between ticks
+// and would suppress nearly every signal after the first one, forever. This
+// test processes two ticks with Timestamps 1 hour apart, back-to-back with
+// no real sleep, under a 30-minute cooldown -- both must still produce a
+// signal, proving the cooldown is driven by tick time, not wall time.
+func TestQuantEngine_SignalCooldown_TracksTickTimeNotWallClock(t *testing.T) {
+	engine := strategy.NewQuantEngine(100, 5)
+	engine.SetSignalCooldown(30 * time.Minute)
+	engine.RegisterStrategy(NewMockStrategy("SPAMMY_STRAT", 0.0))
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	engine.ProcessTick(domain.Tick{Symbol: "XAUUSDm", Bid: 2600.0, Ask: 2600.2, Timestamp: base})
+	// No real sleep here -- only the tick's own Timestamp advances.
+	engine.ProcessTick(domain.Tick{Symbol: "XAUUSDm", Bid: 2601.0, Ask: 2601.2, Timestamp: base.Add(1 * time.Hour)})
+
+	signalCount := 0
+	drain := true
+	for drain {
+		select {
+		case <-engine.SignalChannel():
+			signalCount++
+		default:
+			drain = false
+		}
+	}
+
+	if signalCount != 2 {
+		t.Fatalf("expected 2 signals (ticks are 1h apart in tick-time, cooldown is 30min) -- got %d; if this is 1, allowSignal is still comparing against wall-clock time.Now() instead of tick.Timestamp", signalCount)
+	}
+}
+
 func TestQuantEngine_SignalCooldown_IndependentPerSymbol(t *testing.T) {
 	engine := strategy.NewQuantEngine(100, 5)
 	engine.SetSignalCooldown(1 * time.Hour) // effectively "only one ever" within this test
@@ -546,5 +582,119 @@ func TestQuantEngine_DailyRange_TracksOpenHighLowAndResetsOnNewDay(t *testing.T)
 	m = engine.ProcessTick(domain.Tick{Symbol: "XAUUSDm", Bid: 2700.0, Ask: 2700.2, Timestamp: day2})
 	if m.DailyOpen != m.Price || m.DailyHigh != m.Price || m.DailyLow != m.Price {
 		t.Errorf("Expected daily range to reset fresh on a new calendar day, got open=%f high=%f low=%f (price=%f)", m.DailyOpen, m.DailyHigh, m.DailyLow, m.Price)
+	}
+}
+
+// TestQuantEngine_ReversalDetection_MomentumDeceleration feeds a price series
+// whose per-tick velocity keeps shrinking (10 -> 8 -> 6 -> ...) while staying
+// positive — PriceVelocity itself never turns negative, but VelocityTrendSlope
+// (the slope of velocity's own recent history) should go negative, since
+// that's the whole point of this leading indicator: catching deceleration
+// before TrendSlope actually flips sign.
+func TestQuantEngine_ReversalDetection_MomentumDeceleration(t *testing.T) {
+	engine := strategy.NewQuantEngine(100, 3) // small window so the decelerating run dominates it quickly
+	now := time.Now()
+
+	deltas := []float64{20, 15, 10, 8, 6, 4}
+	price := 2600.0
+	var lastMetrics domain.TickMetrics
+	for i, d := range deltas {
+		price += d
+		lastMetrics = engine.ProcessTick(domain.Tick{
+			Symbol:    "XAUUSDm",
+			Bid:       price,
+			Ask:       price + 0.2,
+			Timestamp: now.Add(time.Duration(i+1) * time.Second),
+		})
+	}
+
+	if lastMetrics.PriceVelocity <= 0 {
+		t.Fatalf("expected PriceVelocity to still be positive, got %f", lastMetrics.PriceVelocity)
+	}
+	if lastMetrics.VelocityTrendSlope >= 0 {
+		t.Errorf("expected VelocityTrendSlope negative (momentum decelerating) while PriceVelocity is still positive, got %f", lastMetrics.VelocityTrendSlope)
+	}
+}
+
+// TestQuantEngine_ReversalDetection_VolatilityContraction feeds a volatile
+// (wide swings) price series followed by a quiet (near-identical) one —
+// StdDev should shrink, and VolatilityTrendSlope (slope of StdDev's own
+// recent history) should go negative, consistent with a Bollinger Band
+// Squeeze forming.
+func TestQuantEngine_ReversalDetection_VolatilityContraction(t *testing.T) {
+	engine := strategy.NewQuantEngine(100, 4)
+	now := time.Now()
+
+	volatilePrices := []float64{2600, 2650, 2590, 2660, 2580, 2670}
+	quietPrices := []float64{2600.00, 2600.02, 2600.01, 2600.03, 2600.01, 2600.02, 2600.01, 2600.02}
+
+	tickN := 0
+	var lastMetrics domain.TickMetrics
+	for _, p := range volatilePrices {
+		lastMetrics = engine.ProcessTick(domain.Tick{Symbol: "XAUUSDm", Bid: p, Ask: p + 0.2, Timestamp: now.Add(time.Duration(tickN) * time.Second)})
+		tickN++
+	}
+	for _, p := range quietPrices {
+		lastMetrics = engine.ProcessTick(domain.Tick{Symbol: "XAUUSDm", Bid: p, Ask: p + 0.2, Timestamp: now.Add(time.Duration(tickN) * time.Second)})
+		tickN++
+	}
+
+	if lastMetrics.StdDev > 1.0 {
+		t.Fatalf("expected StdDev to have shrunk to near-zero after the quiet run, got %f", lastMetrics.StdDev)
+	}
+	if lastMetrics.VolatilityTrendSlope >= 0 {
+		t.Errorf("expected VolatilityTrendSlope negative (volatility contracting) after the volatile->quiet transition, got %f", lastMetrics.VolatilityTrendSlope)
+	}
+}
+
+// TestQuantEngine_Backfill_UpdatesStateWithoutDispatchingSignals guards the
+// startup backfill feature (replaying Store.TickHistorySince through the
+// engine so Multi-TF/ATR/CVD don't start cold on every restart): historical
+// ticks must update all the same rolling state a live tick would, but must
+// NEVER reach a registered strategy or produce a signal — these are
+// historical ticks, not something to act on right now.
+func TestQuantEngine_Backfill_UpdatesStateWithoutDispatchingSignals(t *testing.T) {
+	engine := strategy.NewQuantEngine(10, 5)
+	engine.SetMultiTimeframeFilter(strategy.NewMultiTimeframeFilter(0.0001))
+
+	// targetZ=0.0 means abs(ZScore) >= 0 is always true -- this strategy
+	// fires on literally every tick it ever sees, so if Backfill leaked any
+	// tick through to strategy dispatch, this test would catch it.
+	alwaysFires := NewMockStrategy("ALWAYS_FIRES", 0.0)
+	engine.RegisterStrategy(alwaysFires)
+
+	base := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	var ticks []domain.Tick
+	price := 4000.0
+	for i := 0; i < 20; i++ {
+		ticks = append(ticks, domain.Tick{
+			Symbol:    "XAUUSDm",
+			Bid:       price,
+			Ask:       price + 0.2,
+			Volume:    int64(i + 1),
+			Timestamp: base.Add(time.Duration(i) * time.Minute),
+		})
+		price += 1.0
+	}
+
+	engine.Backfill(ticks)
+
+	select {
+	case sig := <-engine.SignalChannel():
+		t.Fatalf("expected no signal dispatched during Backfill, got %+v", sig)
+	default:
+	}
+
+	metrics := engine.GetLatestMetrics("XAUUSDm")
+	if metrics.Timestamp.IsZero() {
+		t.Fatal("expected GetLatestMetrics to reflect the backfilled ticks")
+	}
+	if !metrics.Timestamp.Equal(ticks[len(ticks)-1].Timestamp) {
+		t.Errorf("expected latest metrics timestamp to match the last backfilled tick, got %v want %v", metrics.Timestamp, ticks[len(ticks)-1].Timestamp)
+	}
+
+	mtfState := engine.GetMultiTimeframeState("XAUUSDm")
+	if !mtfState.HasData {
+		t.Error("expected MultiTimeframeFilter to have data after Backfill pushed ticks through it")
 	}
 }

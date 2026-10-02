@@ -58,17 +58,35 @@ type RiskGuard struct {
 	isCircuitTripped    bool
 	lastResetDate       string
 	store               StateStore
+
+	// clock ให้ "เวลาปัจจุบัน" สำหรับตัดสิน daily reset boundary — default
+	// time.Now (พฤติกรรมเดิมทุกประการ) แต่ backtest engine override ผ่าน
+	// SetClock เพื่อขับด้วย timestamp ของ tick/bar ที่ replay อยู่แทน ไม่งั้น
+	// backtest ที่ replay หลายปีภายในไม่กี่วินาทีจริงจะไม่มีวัน daily reset
+	// เลยสักครั้ง (ล็อก consecutive-loss/circuit breaker ค้างตลอดการ backtest)
+	clock func() time.Time
 }
 
 func NewRiskGuard(config RiskGuardConfig, initialEquity float64) *RiskGuard {
-	today := time.Now().Format("2006-01-02")
+	clock := time.Now
+	today := clock().Format("2006-01-02")
 	return &RiskGuard{
 		config:              config,
 		startingDailyEquity: initialEquity,
 		currentDailyEquity:  initialEquity,
 		lastResetDate:       today,
 		openPositionSymbols: make(map[string]int),
+		clock:               clock,
 	}
+}
+
+// SetClock เปลี่ยนแหล่งที่มาของ "เวลาปัจจุบัน" ที่ใช้ตัดสิน daily reset boundary
+// — ใช้สำหรับ backtest/testing เท่านั้น ไม่ควรเรียกจาก live wiring (default
+// time.Now ถูกต้องอยู่แล้วสำหรับการเทรดจริง)
+func (rg *RiskGuard) SetClock(fn func() time.Time) {
+	rg.mu.Lock()
+	defer rg.mu.Unlock()
+	rg.clock = fn
 }
 
 // AttachStore ผูก StateStore เข้ากับ RiskGuard — ถ้ามีสถานะที่บันทึกไว้ก่อนหน้า
@@ -309,7 +327,7 @@ func (rg *RiskGuard) UpdateConfig(maxDailyLossPercent float64, maxOpenPositions 
 
 // checkDailyResetLocked ต้องเรียกตอนถือ rg.mu อยู่แล้วเท่านั้น คืน true ถ้ามีการ reset จริง
 func (rg *RiskGuard) checkDailyResetLocked() bool {
-	today := time.Now().Format("2006-01-02")
+	today := rg.clock().Format("2006-01-02")
 	if today != rg.lastResetDate {
 		rg.startingDailyEquity = rg.currentDailyEquity
 		rg.isCircuitTripped = false

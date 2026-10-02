@@ -54,10 +54,49 @@ const (
 	// ที่ตลาด trend ชัดๆ ก่อน ถึงจะตั้ง threshold ที่ใช้งานได้จริง
 	MinLongTermTrendSlope = 0
 
+	// MultiTimeframeMinSlope คือ threshold เดียวกันที่ใช้ตัดสิน "มีทิศทาง" ของ
+	// ทุกระดับใน MultiTimeframeFilter (Daily/H4/M30/M15) — ยังไม่ได้ผ่าน
+	// backtest จริงเช่นกัน เป็นค่าประมาณแบบหยาบ ต้องเก็บ slope จริงจากแต่ละ
+	// timeframe ก่อนค่อยปรับให้แม่น **แต่ต่างจาก MinLongTermTrendSlope ตรงที่
+	// filter นี้ fail-open** (ไม่มีทิศทางชัดเจน = ไม่ขวาง) ต่อให้ threshold
+	// นี้ยังเดาไม่แม่น อย่างมากก็แค่ทำงานเหมือนปิดฟีเจอร์นี้ไปเฉยๆ ไม่มีทาง
+	// บล็อก signal ทุกตัวแบบที่ MinLongTermTrendSlope เคยพังมาแล้ว
+	MultiTimeframeMinSlope = 0.001
+
+	// LiquidityMinCVDMagnitude/LiquidityMaxDistanceFromPOC คือ threshold ของ
+	// LiquidityConfluenceFilter (Order Flow/Liquidity Confluence Gate) — ยังไม่
+	// เคย backtest หรือดูข้อมูลจริงจาก /api/v1/status เลยสักครั้ง ต่างจาก
+	// threshold อื่นในไฟล์นี้ (ที่อย่างน้อยเคยเดาจาก SweepWindowSize/MinSlope
+	// มาก่อน) ค่าตรงนี้เป็นแค่ placeholder — ตั้งใจ "ไม่เรียก"
+	// quantEngine.SetLiquidityConfluenceFilter(...) ใน setupQuantEngine()
+	// ด้านล่าง จนกว่าจะเอาค่า CVD/CVDTrendSlope/POCPrice/DistanceToPOC จริงจาก
+	// /api/v1/status ไปดูสักพักก่อน (ดู LiquidityConfluenceFilter's fail-open
+	// design — เปิดก่อนเวลาอันควรเสี่ยงบล็อกสัญญาณดีๆ ทิ้งเงียบๆ)
+	LiquidityMinCVDMagnitude    = 100.0 // placeholder, unvalidated
+	LiquidityMaxDistanceFromPOC = 2.0   // placeholder ($, ~4 buckets ที่ $0.50/bucket), unvalidated
+
 	// SignalCooldown กันไม่ให้ QuantEngine ยิง signal ถี่เกินไปต่อ symbol
 	// ไม่ว่า threshold ของ strategy ตัวไหนจะยังไม่ได้ tune ดีแค่ไหนก็ตาม —
 	// เป็น safety net ชั้นสุดท้ายก่อนถึง Risk Guard
 	SignalCooldown = 30 * time.Second
+
+	// TickHistoryChanBuffer คือ buffer ระหว่าง consumeTicks กับ
+	// recordTickHistory — ใหญ่พอรองรับ burst ช่วงตลาดคึกคักโดยไม่ดรอป tick
+	// ทิ้งบ่อยเกินไป แต่ไม่ใหญ่จนกิน memory เกินจำเป็น
+	TickHistoryChanBuffer = 5000
+	// tickHistoryBatchSize/tickHistoryFlushInterval คุมว่า background
+	// recorder จะ insert ลง DB ทีละกี่แถว หรือทุกกี่วินาที แล้วแต่อย่างไหน
+	// ถึงก่อน — กัน insert ทีละ tick (1.7M+ แถว/วัน) ซึ่งหนักเกินจำเป็นมาก
+	tickHistoryBatchSize     = 200
+	tickHistoryFlushInterval = 2 * time.Second
+
+	// BackfillLookback คือช่วงเวลาย้อนหลังที่ดึงจาก tick_history มา replay
+	// เข้า QuantEngine ตอน startup (ดู backfillQuantEngineState) — 25 ชม. เผื่อ
+	// ไว้เกิน 24 ชม. ของ Daily TimeWindow ใน MultiTimeframeFilter เล็กน้อย
+	// เพื่อให้ span หลัง backfill เสร็จมากกว่า 24 ชม. เต็มๆ ไม่ใช่พอดีเป๊ะ —
+	// ถ้า tick_history มีข้อมูลน้อยกว่านี้ (เช่น service เพิ่งรันครั้งแรก) ก็แค่
+	// ได้เท่าที่มี ไม่ error
+	BackfillLookback = 25 * time.Hour
 )
 
 func main() {
@@ -79,6 +118,7 @@ func main() {
 	riskCfg := loadOrSeedRiskConfig(store, cfg)
 
 	quantEngine := setupQuantEngine()
+	backfillQuantEngineState(quantEngine, store, TradingSymbol)
 	riskGuard, riskManager := setupRiskManagement(store, riskCfg, accountBalance)
 
 	orderSink := make(chan risk.PreparedOrder, BufferCapacity)
@@ -89,8 +129,11 @@ func main() {
 	quantEngine.Start(ctx)
 	execRouter.Start(ctx)
 
+	tickHistoryChan := make(chan domain.Tick, TickHistoryChanBuffer)
+
 	go dispatchOrders(ctx, mt5Adapter, riskGuard, store, orderSink)
-	go consumeTicks(ctx, streamAdapter, quantEngine)
+	go consumeTicks(ctx, streamAdapter, quantEngine, tickHistoryChan)
+	go recordTickHistory(ctx, tickHistoryChan, store)
 	go consumeTradeClosedEvents(ctx, streamAdapter, riskGuard, store)
 
 	srv := startHTTPServer(cfg, mt5Adapter, riskManager, riskGuard, quantEngine, execRouter, store)
@@ -198,19 +241,46 @@ func loadOrSeedRiskConfig(store *database.Store, cfg config.Config) domain.RiskC
 		log.Fatal().Err(err).Msg("Failed to load risk config from DB")
 	}
 	if hasSavedConfig {
+		// Migration safety: แถวเก่าที่บันทึกไว้ก่อนเพิ่มคอลัมน์
+		// VolatilityMultiplier (2026-10-01) จะได้ค่า 0 จาก AutoMigrate — ถ้าปล่อย
+		// ไว้ slDistance จะกลายเป็น 0 เสมอ (เทรดไม่ได้เลย) เติมจาก app.env แทน
+		// แล้วเขียนกลับ ครั้งต่อไปจะไม่เจอปัญหานี้อีก
+		if riskCfg.VolatilityMultiplier <= 0 {
+			log.Warn().Msg("⚠️ risk_config row missing VolatilityMultiplier (เก่ากว่าฟีเจอร์นี้) — เติมจาก app.env ให้อัตโนมัติ")
+			riskCfg.VolatilityMultiplier = cfg.VolatilityMultiplier
+			if err := store.SaveRiskConfig(riskCfg); err != nil {
+				log.Fatal().Err(err).Msg("Failed to backfill VolatilityMultiplier into DB")
+			}
+		}
+		// เหมือนกันกับ VolatilityMultiplier ด้านบน แต่สำหรับคอลัมน์ ATRMultiplier
+		// (2026-10) — ถ้าปล่อยไว้ 0 แล้วมีคนเปิด UseATRForSizing ทีหลังจะได้
+		// slDistance=0 เทรดไม่ได้เลย เติมจาก app.env ไว้ก่อนเผื่อไว้
+		if riskCfg.ATRMultiplier <= 0 {
+			log.Warn().Msg("⚠️ risk_config row missing ATRMultiplier (เก่ากว่าฟีเจอร์นี้) — เติมจาก app.env ให้อัตโนมัติ")
+			riskCfg.ATRMultiplier = cfg.ATRMultiplier
+			if err := store.SaveRiskConfig(riskCfg); err != nil {
+				log.Fatal().Err(err).Msg("Failed to backfill ATRMultiplier into DB")
+			}
+		}
+		// UseATRForSizing ไม่ต้อง backfill — AutoMigrate เติมคอลัมน์ bool ใหม่ให้
+		// แถวเก่าเป็น false อยู่แล้ว ซึ่งเป็นค่า default ที่ถูกต้อง (ปิดไว้ก่อน
+		// จนกว่าจะเปิดเองผ่าน PUT /api/v1/risk/config) ไม่มีอะไรต้องแก้
 		log.Info().Msg("💾 Loaded risk config from DB (overrides app.env)")
 		return riskCfg
 	}
 
 	riskCfg = domain.RiskConfig{
-		RiskPerTradePercent: cfg.RiskPerTradePercent,
-		MinLotSize:          cfg.MinLotSize,
-		MaxLotSize:          cfg.MaxLotSize,
-		MinSLDistance:       cfg.MinSLDistance,
-		MaxSLDistance:       cfg.MaxSLDistance,
-		MaxDailyLossPercent: cfg.MaxDailyLossPercent,
-		MaxOpenPositions:    cfg.MaxOpenPositions,
-		MaxSpreadPips:       cfg.MaxSpreadPips,
+		RiskPerTradePercent:  cfg.RiskPerTradePercent,
+		MinLotSize:           cfg.MinLotSize,
+		MaxLotSize:           cfg.MaxLotSize,
+		MinSLDistance:        cfg.MinSLDistance,
+		MaxSLDistance:        cfg.MaxSLDistance,
+		VolatilityMultiplier: cfg.VolatilityMultiplier,
+		ATRMultiplier:        cfg.ATRMultiplier,
+		UseATRForSizing:      cfg.UseATRForSizing,
+		MaxDailyLossPercent:  cfg.MaxDailyLossPercent,
+		MaxOpenPositions:     cfg.MaxOpenPositions,
+		MaxSpreadPips:        cfg.MaxSpreadPips,
 	}
 	if err := store.SaveRiskConfig(riskCfg); err != nil {
 		log.Fatal().Err(err).Msg("Failed to seed risk config into DB")
@@ -224,10 +294,44 @@ func setupQuantEngine() *strategy.QuantEngine {
 	quantEngine := strategy.NewQuantEngine(BufferCapacity, WindowSize)
 	quantEngine.SetSignalCooldown(SignalCooldown)
 	quantEngine.SetLongTermWindowSize(LongTermWindowSize)
+	quantEngine.SetMultiTimeframeFilter(strategy.NewMultiTimeframeFilter(MultiTimeframeMinSlope))
+
+	// CVD/POC metrics คำนวณและโชว์ใน /api/v1/status เสมอไม่ว่าจะเปิดบรรทัด
+	// ด้านล่างนี้หรือไม่ — เมื่อดู CVD/CVDTrendSlope/POCPrice/DistanceToPOC จริง
+	// สักพักแล้วพอจะตั้ง threshold ได้ ค่อยเปิดบรรทัดนี้:
+	// quantEngine.SetLiquidityConfluenceFilter(strategy.NewLiquidityConfluenceFilter(LiquidityMinCVDMagnitude, LiquidityMaxDistanceFromPOC))
 
 	registerStrategies(quantEngine)
 
 	return quantEngine
+}
+
+// backfillQuantEngineState ดึง tick_history ย้อนหลัง BackfillLookback ชั่วโมง
+// มา replay เข้า QuantEngine ก่อนเริ่มรับ tick สด — แก้ปัญหาที่ Multi-TF/ATR/
+// CVD/Volume Profile ต้องเริ่มนับจากศูนย์ใหม่ทุกครั้งที่ restart (Daily
+// TimeWindow กว่าจะ warm up ใช้เวลาเกือบ 20 ชม.) ทั้งที่ tick_history บันทึก
+// ข้อมูลไว้ต่อเนื่องอยู่แล้วตั้งแต่ฟีเจอร์ Tick History Recording — ถ้า
+// tick_history มีข้อมูลน้อยกว่า BackfillLookback (เช่น รันครั้งแรก) ก็แค่ได้
+// เท่าที่มี ไม่ fail การ start เพราะนี่เป็นแค่ optimization ไม่ใช่ correctness
+// requirement (ไม่มี backfill เลยก็ยังทำงานได้ แค่ warm up ช้ากว่า)
+func backfillQuantEngineState(quantEngine *strategy.QuantEngine, store *database.Store, symbol string) {
+	since := time.Now().Add(-BackfillLookback)
+	ticks, err := store.TickHistorySince(symbol, since)
+	if err != nil {
+		log.Warn().Err(err).Msg("⚠️ Failed to load tick_history for backfill — starting cold (Multi-TF/ATR/CVD will warm up from live ticks only)")
+		return
+	}
+	if len(ticks) == 0 {
+		log.Info().Str("symbol", symbol).Msg("ℹ️ No tick_history found for backfill yet — starting cold")
+		return
+	}
+
+	quantEngine.Backfill(ticks)
+	log.Info().
+		Str("symbol", symbol).
+		Int("ticks", len(ticks)).
+		Time("since", ticks[0].Timestamp).
+		Msg("🔁 Backfilled QuantEngine state from tick_history")
 }
 
 func registerStrategies(quantEngine *strategy.QuantEngine) {
@@ -259,7 +363,7 @@ func setupRiskManagement(store *database.Store, riskCfg domain.RiskConfig, accou
 		log.Fatal().Err(err).Msg("Failed to attach store to RiskGuard")
 	}
 
-	riskManager := risk.NewRiskManager(riskCfg.RiskPerTradePercent, accountBalance, riskCfg.MinLotSize, riskCfg.MaxLotSize, riskCfg.MinSLDistance, riskCfg.MaxSLDistance)
+	riskManager := risk.NewRiskManager(riskCfg.RiskPerTradePercent, accountBalance, riskCfg.MinLotSize, riskCfg.MaxLotSize, riskCfg.MinSLDistance, riskCfg.MaxSLDistance, riskCfg.VolatilityMultiplier, riskCfg.ATRMultiplier, riskCfg.UseATRForSizing)
 
 	return riskGuard, riskManager
 }
@@ -367,7 +471,7 @@ func dispatchOrder(ctx context.Context, mt5Adapter *mt5.TCPAdapter, riskGuard *r
 
 // consumeTicks สมัครรับ tick stream จาก MT5 แล้วป้อนเข้า QuantEngine ทีละ
 // tick — ถ้าสมัครไม่สำเร็จแค่ log แล้วจบ (ไม่ fail ทั้งระบบ)
-func consumeTicks(ctx context.Context, streamAdapter *mt5.StreamAdapter, quantEngine *strategy.QuantEngine) {
+func consumeTicks(ctx context.Context, streamAdapter *mt5.StreamAdapter, quantEngine *strategy.QuantEngine, historyChan chan<- domain.Tick) {
 	tickChan, err := streamAdapter.SubscribeTicks(ctx)
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to subscribe ticks")
@@ -377,8 +481,56 @@ func consumeTicks(ctx context.Context, streamAdapter *mt5.StreamAdapter, quantEn
 	log.Info().Msg("🔌 Listening to Live Tick Stream...")
 	for tick := range tickChan {
 		quantEngine.PushTick(tick)
+
+		// ส่งต่อให้ background recorder เก็บ tick_history — non-blocking เสมอ
+		// (ถ้า recorder ตามไม่ทัน ยอมดรอป tick ทิ้งไปเลย ดีกว่าไปหน่วง live
+		// trading path ซึ่งต้องเร็วที่สุดเป็นหลัก ตามหลักการเดิมของโปรเจกต์)
+		select {
+		case historyChan <- tick:
+		default:
+			log.Warn().Str("symbol", tick.Symbol).Msg("[TickHistory] recorder backlog full, dropping tick")
+		}
 	}
 	log.Info().Msg("Tick consumer stopped")
+}
+
+// recordTickHistory เก็บ tick ทุกตัวที่ไหลผ่าน historyChan ลง tick_history —
+// รันแยกจาก live trading path โดยสิ้นเชิง (consumeTicks แค่ non-blocking ส่ง
+// เข้ามาเฉยๆ) เขียนลง DB แบบ batch (ครบ tickHistoryBatchSize แถว หรือครบ
+// tickHistoryFlushInterval แล้วแต่อย่างไหนถึงก่อน) ไม่ insert ทีละ tick
+func recordTickHistory(ctx context.Context, historyChan <-chan domain.Tick, store *database.Store) {
+	batch := make([]domain.Tick, 0, tickHistoryBatchSize)
+	ticker := time.NewTicker(tickHistoryFlushInterval)
+	defer ticker.Stop()
+
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		if err := store.SaveTickHistoryBatch(batch); err != nil {
+			log.Warn().Err(err).Int("count", len(batch)).Msg("Failed to save tick history batch")
+		}
+		batch = batch[:0]
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			flush()
+			return
+		case tick, ok := <-historyChan:
+			if !ok {
+				flush()
+				return
+			}
+			batch = append(batch, tick)
+			if len(batch) >= tickHistoryBatchSize {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+		}
+	}
 }
 
 // consumeTradeClosedEvents สมัครรับ trade_closed event จาก MT5 (ใช้ connection
@@ -432,6 +584,7 @@ func handleTradeClosed(riskGuard *risk.RiskGuard, store *database.Store, event d
 			Ticket:      event.Ticket,
 			Profit:      event.Profit,
 			IsWin:       isWin,
+			Session:     domain.MarketSessionFromUTC(event.Timestamp),
 			Timestamp:   event.Timestamp,
 		}); err != nil {
 			log.Warn().Err(err).Msg("Failed to save trade outcome")

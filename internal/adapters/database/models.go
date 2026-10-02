@@ -21,16 +21,19 @@ func (AccountStateModel) TableName() string { return "account_state" }
 // ดึงจาก MT5 ไม่ได้) — มีแค่แถวเดียวเสมอ (ID=1) ตั้งผ่าน PUT /api/v1/risk/config
 // แทนการแก้ app.env + restart service
 type RiskConfigModel struct {
-	ID                  uint `gorm:"primaryKey"`
-	RiskPerTradePercent float64
-	MinLotSize          float64
-	MaxLotSize          float64
-	MinSLDistance       float64
-	MaxSLDistance       float64
-	MaxDailyLossPercent float64
-	MaxOpenPositions    int
-	MaxSpreadPips       float64
-	UpdatedAt           time.Time
+	ID                   uint `gorm:"primaryKey"`
+	RiskPerTradePercent  float64
+	MinLotSize           float64
+	MaxLotSize           float64
+	MinSLDistance        float64
+	MaxSLDistance        float64
+	VolatilityMultiplier float64
+	ATRMultiplier        float64
+	UseATRForSizing      bool
+	MaxDailyLossPercent  float64
+	MaxOpenPositions     int
+	MaxSpreadPips        float64
+	UpdatedAt            time.Time
 }
 
 func (RiskConfigModel) TableName() string { return "risk_config" }
@@ -75,6 +78,7 @@ type TradeOutcomeModel struct {
 	Ticket      uint64 `gorm:"index"`
 	Profit      float64
 	IsWin       bool
+	Session     string `gorm:"index"` // domain.Session* — คำนวณจาก Timestamp ตอนบันทึก (ดู domain.MarketSessionFromUTC)
 	Timestamp   time.Time
 }
 
@@ -132,3 +136,20 @@ type PendingOrderModel struct {
 }
 
 func (PendingOrderModel) TableName() string { return "pending_orders" }
+
+// TickHistoryModel เก็บ tick ดิบทุกตัวที่ไหลเข้าระบบ (เพิ่มจากบทสนทนา
+// 2026-10-01 — ดู ROADMAP.md "Tick History Recording") — รากฐานสำหรับคำนวณ
+// Order Flow/POC/ATR ย้อนหลังและทำ backtest ในอนาคต เขียนผ่าน background
+// goroutine แยก (batch insert) ไม่ได้เขียนทุก tick ทีละแถว กันกระทบ critical
+// path ของการเทรดจริง — ตารางนี้จะโตเร็วมาก (หลัก GB/เดือน) ยังไม่มี retention
+// policy ตัดข้อมูลเก่าทิ้ง (รู้อยู่แล้ว ยังไม่ทำ เป็น follow-up)
+type TickHistoryModel struct {
+	ID        uint   `gorm:"primaryKey"`
+	Symbol    string `gorm:"index:idx_tick_history_symbol_time"`
+	Bid       float64
+	Ask       float64
+	Volume    int64
+	Timestamp time.Time `gorm:"index:idx_tick_history_symbol_time"`
+}
+
+func (TickHistoryModel) TableName() string { return "tick_history" }
