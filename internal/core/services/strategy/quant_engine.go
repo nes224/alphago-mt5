@@ -35,6 +35,37 @@ type QuantEngine struct {
 	longTermWindows    map[string]*Window
 	longTermWindowSize int
 
+	// mtfFilter คือ Top-Down Multi-Timeframe Confirmation (Daily+H4 Bias ->
+	// M30/M15 Confirmation) — nil คือปิดการทำงานนี้ (ไม่ขวาง signal ใดๆ)
+	mtfFilter *MultiTimeframeFilter
+
+	// velocityWindows/volatilityWindows เก็บ "ประวัติของ PriceVelocity/StdDev
+	// เอง" (ไม่ใช่ราคา) ใช้คำนวณ Reversal Detection leading indicators —
+	// ขนาดเท่า windowSize หลัก ไม่ต้องตั้งแยก
+	velocityWindows   map[string]*Window
+	volatilityWindows map[string]*Window
+
+	// sizingWindows คือ TimeWindow แยกต่างหาก (M15, duration-based) ใช้วัด
+	// StdDev สำหรับคำนวณ SL/TP โดยเฉพาะ (RiskManager.CalculateOrder) — ตั้งใจ
+	// แยกจาก mtfFilter เพราะคนละหน้าที่กัน (mtfFilter ตัดสินทิศทาง, อันนี้วัด
+	// ความผันผวนสำหรับ sizing) ไม่อยากให้ปิด mtfFilter แล้วกระทบ sizing ไปด้วย
+	sizingWindows map[string]*TimeWindow
+
+	// atrCalculators คือ True Range (M5×14, Wilder-smoothed) ต่อ symbol — ดู
+	// atr.go — ทางเลือกใหม่แทน sizingWindows สำหรับ RiskManager.CalculateOrder
+	// (ปิดอยู่โดย default ผ่าน RiskConfig.UseATRForSizing)
+	atrCalculators map[string]*ATRCalculator
+
+	// cvdWindows/cvdTrendWindows/volumeProfiles คือ Order Flow (CVD) +
+	// Liquidity (Volume Profile/POC) ต่อ symbol — ดู cvd.go/volume_profile.go
+	// คำนวณและโชว์ผ่าน TickMetrics เสมอ (ไม่มี toggle ปิด) ส่วน lcFilter คือ
+	// gate ที่ใช้ค่าพวกนี้ตัดสิน ปิดอยู่โดย default (nil) จนกว่าจะดูค่าจริงจาก
+	// /api/v1/status สักพักก่อน — ดู SetLiquidityConfluenceFilter
+	cvdWindows      map[string]*RollingCVD
+	cvdTrendWindows map[string]*Window
+	volumeProfiles  map[string]*RollingVolumeProfile
+	lcFilter        *LiquidityConfluenceFilter
+
 	dailyRanges map[string]*dailyRange
 
 	cooldownMu     sync.Mutex
@@ -44,16 +75,23 @@ type QuantEngine struct {
 
 func NewQuantEngine(bufferSize int, windowSize int) *QuantEngine {
 	return &QuantEngine{
-		strategies:      make([]ports.QuantStrategy, 0),
-		tickChan:        make(chan domain.Tick, bufferSize),
-		signalChan:      make(chan domain.OrderSignal, bufferSize),
-		latestMetrics:   make(map[string]domain.TickMetrics),
-		lastTickMap:     make(map[string]domain.Tick),
-		windows:         make(map[string]*Window),
-		windowSize:      windowSize,
-		longTermWindows: make(map[string]*Window),
-		dailyRanges:     make(map[string]*dailyRange),
-		lastSignalTime:  make(map[string]time.Time),
+		strategies:        make([]ports.QuantStrategy, 0),
+		tickChan:          make(chan domain.Tick, bufferSize),
+		signalChan:        make(chan domain.OrderSignal, bufferSize),
+		latestMetrics:     make(map[string]domain.TickMetrics),
+		lastTickMap:       make(map[string]domain.Tick),
+		windows:           make(map[string]*Window),
+		windowSize:        windowSize,
+		longTermWindows:   make(map[string]*Window),
+		velocityWindows:   make(map[string]*Window),
+		volatilityWindows: make(map[string]*Window),
+		sizingWindows:     make(map[string]*TimeWindow),
+		atrCalculators:    make(map[string]*ATRCalculator),
+		cvdWindows:        make(map[string]*RollingCVD),
+		cvdTrendWindows:   make(map[string]*Window),
+		volumeProfiles:    make(map[string]*RollingVolumeProfile),
+		dailyRanges:       make(map[string]*dailyRange),
+		lastSignalTime:    make(map[string]time.Time),
 	}
 }
 
@@ -66,6 +104,14 @@ func (e *QuantEngine) SetLongTermWindowSize(n int) {
 	e.longTermWindowSize = n
 }
 
+// SetMultiTimeframeFilter เปิดใช้งาน Top-Down Multi-Timeframe Confirmation —
+// ไม่เรียกเลย (nil) คือปิดการทำงานนี้ไว้เหมือนเดิม (ค่า default)
+func (e *QuantEngine) SetMultiTimeframeFilter(f *MultiTimeframeFilter) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.mtfFilter = f
+}
+
 // SetSignalCooldown ตั้งระยะเวลาต่ำสุดระหว่าง signal ที่จะถูกส่งออกต่อ symbol
 // เป็น safety net กันไม่ให้ strategy ที่ threshold ยังไม่ผ่านการ tune ยิง order
 // รัวเกินไปในตลาดจริง (ค่า default คือ 0 = ปิดการทำงานนี้)
@@ -76,8 +122,13 @@ func (e *QuantEngine) SetSignalCooldown(d time.Duration) {
 }
 
 // allowSignal คืน true ถ้ายังไม่มี signal ของ symbol นี้ถูกส่งออกภายในช่วง
-// cooldown ที่ตั้งไว้ และจะบันทึกเวลาปัจจุบันไว้เป็น "signal ล่าสุด" ทันทีที่อนุญาต
-func (e *QuantEngine) allowSignal(symbol string) bool {
+// cooldown ที่ตั้งไว้ และจะบันทึก at ไว้เป็น "signal ล่าสุด" ทันทีที่อนุญาต — ใช้
+// timestamp ของ tick เอง (at) ไม่ใช่ time.Now() เพื่อให้ historical-replay-safe
+// เหมือน TimeWindow/ATRCalculator (tick สดจริง at ~= time.Now() เสมออยู่แล้ว
+// ไม่กระทบ live แต่ backtest ที่ replay tick เป็นล้านตัวภายในไม่กี่วินาทีจริง
+// จะพังทันทีถ้าเทียบกับ wall clock — cooldown จะบล็อก signal เกือบทุกตัวเพราะ
+// เวลาจริงที่ผ่านไปแทบจะเป็นศูนย์เสมอ)
+func (e *QuantEngine) allowSignal(symbol string, at time.Time) bool {
 	e.cooldownMu.Lock()
 	defer e.cooldownMu.Unlock()
 
@@ -85,11 +136,10 @@ func (e *QuantEngine) allowSignal(symbol string) bool {
 		return true
 	}
 
-	now := time.Now()
-	if last, exists := e.lastSignalTime[symbol]; exists && now.Sub(last) < e.signalCooldown {
+	if last, exists := e.lastSignalTime[symbol]; exists && at.Sub(last) < e.signalCooldown {
 		return false
 	}
-	e.lastSignalTime[symbol] = now
+	e.lastSignalTime[symbol] = at
 	return true
 }
 
@@ -158,13 +208,65 @@ func (e *QuantEngine) calculateMetrics(tick domain.Tick) domain.TickMetrics {
 
 	window.Push(midPrice)
 
+	// Reversal Detection (leading indicators): slope ของ PriceVelocity/StdDev
+	// เอง ไม่ใช่สลับเครื่องหมายของราคา — compute ก่อน push ค่าปัจจุบันเข้าไป
+	// เหมือน window หลักด้านบน (slope สะท้อน "แนวโน้ม" ก่อนหน้า ไม่รวมค่าล่าสุด)
+	velocityWindow := e.getOrCreateVelocityWindow(tick.Symbol)
+	velocityTrendSlope := velocityWindow.Slope()
+	velocityWindow.Push(priceVelocity)
+
+	volatilityWindow := e.getOrCreateVolatilityWindow(tick.Symbol)
+	volatilityTrendSlope := volatilityWindow.Slope()
+	volatilityWindow.Push(stdDev)
+
 	var longTermTrendSlope float64
 	if ltWindow := e.getOrCreateLongTermWindow(tick.Symbol); ltWindow != nil {
 		longTermTrendSlope = ltWindow.Slope()
 		ltWindow.Push(midPrice)
 	}
 
+	// Sizing volatility (M15) — สำหรับ RiskManager.CalculateOrder ใช้กำหนด
+	// SL/TP distance แทน StdDev ของ window 20 tick เดิมที่สั้นเกินไป
+	sizingWindow := e.getOrCreateSizingWindow(tick.Symbol)
+	sizingVolatility := sizingWindow.StdDev()
+	sizingWindow.Push(tick.Timestamp, midPrice)
+
+	atrCalc := e.getOrCreateATR(tick.Symbol)
+	atrValue, atrReady := atrCalc.Value()
+	atrCalc.Push(tick.Timestamp, midPrice)
+
+	// CVD (rolling order flow) + Volume Profile/POC (rolling liquidity) — feed
+	// from volumeDelta (already computed above for VolumeVelocity), not raw
+	// tick.Volume. See RollingCVD/RollingVolumeProfile doc comments for why.
+	cvd := e.getOrCreateCVD(tick.Symbol)
+	cvdReady := cvd.Span() >= time.Duration(float64(cvdWindowDuration)*minDirectionWarmupFraction)
+	cvdValue := cvd.Value()
+	cvd.Push(tick.Timestamp, midPrice, volumeDelta)
+
+	cvdTrendWindow := e.getOrCreateCVDTrendWindow(tick.Symbol)
+	cvdTrendSlope := cvdTrendWindow.Slope()
+	cvdTrendWindow.Push(cvdValue)
+
+	profile := e.getOrCreateVolumeProfile(tick.Symbol)
+	profileReady := profile.Span() >= time.Duration(float64(volumeProfileDuration)*minDirectionWarmupFraction)
+	pocPrice, pocVolume, pocOk := profile.POC()
+	volumeAtCurrentPrice := profile.VolumeAt(midPrice)
+	absVolumeDelta := volumeDelta
+	if absVolumeDelta < 0 {
+		absVolumeDelta = -absVolumeDelta
+	}
+	profile.Push(tick.Timestamp, midPrice, float64(absVolumeDelta))
+
+	var distanceToPOC float64
+	if pocOk {
+		distanceToPOC = midPrice - pocPrice
+	}
+
 	dayOpen, dayHigh, dayLow := e.updateDailyRange(tick.Symbol, midPrice, tick.Timestamp)
+
+	if e.mtfFilter != nil {
+		e.mtfFilter.PushTick(tick.Symbol, midPrice, tick.Timestamp)
+	}
 
 	return domain.TickMetrics{
 		Symbol:             tick.Symbol,
@@ -186,8 +288,25 @@ func (e *QuantEngine) calculateMetrics(tick domain.Tick) domain.TickMetrics {
 		VolumeDelta:        volumeDelta,
 		VolumeVelocity:     volumeVelocity,
 		PriceVelocity:      priceVelocity,
-		Timestamp:          tick.Timestamp,
-		WindowSize:         window.Size(),
+
+		VelocityTrendSlope:   velocityTrendSlope,
+		VolatilityTrendSlope: volatilityTrendSlope,
+		SizingVolatility:     sizingVolatility,
+		ATR:                  atrValue,
+		ATRReady:             atrReady,
+
+		CVD:           cvdValue,
+		CVDReady:      cvdReady,
+		CVDTrendSlope: cvdTrendSlope,
+
+		POCPrice:             pocPrice,
+		POCVolume:            pocVolume,
+		POCReady:             profileReady && pocOk,
+		DistanceToPOC:        distanceToPOC,
+		VolumeAtCurrentPrice: volumeAtCurrentPrice,
+
+		Timestamp:  tick.Timestamp,
+		WindowSize: window.Size(),
 	}
 }
 
@@ -200,12 +319,29 @@ func (e *QuantEngine) ProcessTick(tick domain.Tick) domain.TickMetrics {
 
 	strategies := make([]ports.QuantStrategy, len(e.strategies))
 	copy(strategies, e.strategies)
+	mtfFilter := e.mtfFilter
+	lcFilter := e.lcFilter
 
 	e.mu.Unlock()
 
 	for _, s := range strategies {
 		if signal := s.OnTick(tick, metrics); signal != nil {
-			if !e.allowSignal(signal.Symbol) {
+			// เช็ค Multi-Timeframe Confirmation ก่อน cooldown — signal ที่สวน
+			// Bias ใหญ่ถูกบล็อกไปเลย ไม่ควรไปกิน cooldown slot ของ symbol นี้
+			// จนทำให้ signal ตัวถัดไป (ที่อาจจะไปถูกทาง) ต้องรอคอยอีก 30 วิ
+			if mtfFilter != nil && !mtfFilter.Allows(signal.Symbol, signal.Action) {
+				continue
+			}
+
+			// Order Flow/Liquidity Confluence Gate — เช็คจุดเดียวกับ mtfFilter
+			// ด้วยเหตุผลเดียวกัน (ไม่ควรไปกิน cooldown slot) — ปิดอยู่โดย
+			// default (lcFilter เป็น nil) จนกว่าจะเปิดเองผ่าน
+			// SetLiquidityConfluenceFilter
+			if lcFilter != nil && !lcFilter.Allows(metrics, signal.Action) {
+				continue
+			}
+
+			if !e.allowSignal(signal.Symbol, tick.Timestamp) {
 				continue
 			}
 
@@ -220,11 +356,48 @@ func (e *QuantEngine) ProcessTick(tick domain.Tick) domain.TickMetrics {
 	return metrics
 }
 
+// Backfill replays historical ticks (must be in chronological order, e.g.
+// from Store.TickHistorySince) through the exact same metric calculation
+// path live ticks use — warming up every rolling window (Multi-TF, ATR, CVD,
+// Volume Profile, sizing, daily range, lastTickMap deltas) — WITHOUT
+// dispatching to registered strategies or emitting signals, since these are
+// historical ticks, not something to act on "right now". Call this once at
+// startup, before Start(ctx)/PushTick begin feeding live ticks, so Multi-TF
+// etc. don't have to re-earn hours of warm-up on every restart even though
+// tick_history already has the data.
+func (e *QuantEngine) Backfill(ticks []domain.Tick) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	for _, tick := range ticks {
+		metrics := e.calculateMetrics(tick)
+		e.latestMetrics[tick.Symbol] = metrics
+		e.lastTickMap[tick.Symbol] = tick
+	}
+}
+
 func (e *QuantEngine) GetLatestMetrics(symbol string) domain.TickMetrics {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
 	return e.latestMetrics[symbol]
+}
+
+// GetMultiTimeframeState returns the live Bias/Confirmation state of the
+// Multi-Timeframe filter for a symbol (see MultiTimeframeState) — surfaced
+// via GET /api/v1/status so this can be watched live instead of trusted
+// blindly. Returns a zero-value state (HasData=false, both actions allowed)
+// if no filter is configured (SetMultiTimeframeFilter never called) or the
+// symbol has never been pushed a tick.
+func (e *QuantEngine) GetMultiTimeframeState(symbol string) domain.MultiTimeframeState {
+	e.mu.RLock()
+	f := e.mtfFilter
+	e.mu.RUnlock()
+
+	if f == nil {
+		return domain.MultiTimeframeState{AllowsBuy: true, AllowsSell: true}
+	}
+	return f.State(symbol)
 }
 
 func (e *QuantEngine) UpdateMetrics(symbol string, m domain.TickMetrics) {
@@ -242,6 +415,108 @@ func (e *QuantEngine) getOrCreateWindow(symbol string) *Window {
 	}
 
 	return w
+}
+
+func (e *QuantEngine) getOrCreateVelocityWindow(symbol string) *Window {
+	w, exists := e.velocityWindows[symbol]
+	if !exists {
+		w = NewWindow(e.windowSize)
+		e.velocityWindows[symbol] = w
+	}
+
+	return w
+}
+
+func (e *QuantEngine) getOrCreateVolatilityWindow(symbol string) *Window {
+	w, exists := e.volatilityWindows[symbol]
+	if !exists {
+		w = NewWindow(e.windowSize)
+		e.volatilityWindows[symbol] = w
+	}
+
+	return w
+}
+
+// sizingWindowDuration คือความยาวของ TimeWindow ที่ใช้วัด volatility สำหรับ
+// position sizing — เลือก M15 เพราะยาวพอจะไม่ผันผวนตาม noise ของแต่ละ tick
+// (ต่างจาก windowSize หลักที่แค่ 20 tick) แต่ก็ไม่ยาวจน oversize SL (ต่างจาก
+// H4/Daily ที่ mtfFilter ใช้ ซึ่งยาวเกินไปสำหรับ trade ที่มักปิดภายในไม่กี่นาที)
+const sizingWindowDuration = 15 * time.Minute
+
+func (e *QuantEngine) getOrCreateSizingWindow(symbol string) *TimeWindow {
+	w, exists := e.sizingWindows[symbol]
+	if !exists {
+		w = NewTimeWindow(sizingWindowDuration)
+		e.sizingWindows[symbol] = w
+	}
+
+	return w
+}
+
+// atrPeriodDuration/atrNumPeriods คือ M5×14 ตาม ROADMAP.md "ATR แทน
+// StdDev(M15)" — 14 period × 5 นาที = ~70 นาทีกว่า ATR จะ ready หลัง restart
+const (
+	atrPeriodDuration = 5 * time.Minute
+	atrNumPeriods     = 14
+)
+
+func (e *QuantEngine) getOrCreateATR(symbol string) *ATRCalculator {
+	a, exists := e.atrCalculators[symbol]
+	if !exists {
+		a = NewATRCalculator(atrPeriodDuration, atrNumPeriods)
+		e.atrCalculators[symbol] = a
+	}
+
+	return a
+}
+
+// cvdWindowDuration/volumeProfileDuration/volumeProfileBucketSize ยังไม่ผ่าน
+// backtest จริง เป็นค่าประมาณ — volumeProfileBucketSize ($ ต่อ bucket, ราคา
+// XAUUSDm ~4000) ราคาขยับทีละ ~$0.01 แต่โครงสร้างที่มีความหมายใกล้เคียง
+// $0.50-$1 มากกว่า ปรับทีหลังได้เมื่อมีข้อมูลจริงจาก /api/v1/status
+const (
+	cvdWindowDuration       = 15 * time.Minute
+	volumeProfileDuration   = 60 * time.Minute
+	volumeProfileBucketSize = 0.50
+)
+
+func (e *QuantEngine) getOrCreateCVD(symbol string) *RollingCVD {
+	c, exists := e.cvdWindows[symbol]
+	if !exists {
+		c = NewRollingCVD(cvdWindowDuration)
+		e.cvdWindows[symbol] = c
+	}
+
+	return c
+}
+
+func (e *QuantEngine) getOrCreateCVDTrendWindow(symbol string) *Window {
+	w, exists := e.cvdTrendWindows[symbol]
+	if !exists {
+		w = NewWindow(e.windowSize)
+		e.cvdTrendWindows[symbol] = w
+	}
+
+	return w
+}
+
+func (e *QuantEngine) getOrCreateVolumeProfile(symbol string) *RollingVolumeProfile {
+	p, exists := e.volumeProfiles[symbol]
+	if !exists {
+		p = NewRollingVolumeProfile(volumeProfileBucketSize, volumeProfileDuration)
+		e.volumeProfiles[symbol] = p
+	}
+
+	return p
+}
+
+// SetLiquidityConfluenceFilter เปิดใช้งาน Order Flow/Liquidity Confluence
+// Gate — ไม่เรียกเลย (nil) คือปิดการทำงานนี้ไว้ (ค่า default) — CVD/POC
+// metrics ยังคำนวณและโชว์ใน /api/v1/status เสมอไม่ว่าจะเปิด filter นี้หรือไม่
+func (e *QuantEngine) SetLiquidityConfluenceFilter(f *LiquidityConfluenceFilter) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.lcFilter = f
 }
 
 // getOrCreateLongTermWindow คืน nil ถ้า SetLongTermWindowSize ไม่เคยถูกเรียก

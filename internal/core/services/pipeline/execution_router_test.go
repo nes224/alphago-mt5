@@ -29,13 +29,16 @@ func (f *fakeEngine) PushTick(tick domain.Tick)                         {}
 func (f *fakeEngine) SignalChannel() <-chan domain.OrderSignal          { return f.signalCh }
 func (f *fakeEngine) GetLatestMetrics(symbol string) domain.TickMetrics { return f.metrics }
 func (f *fakeEngine) UpdateMetrics(symbol string, m domain.TickMetrics) {}
+func (f *fakeEngine) GetMultiTimeframeState(symbol string) domain.MultiTimeframeState {
+	return domain.MultiTimeframeState{AllowsBuy: true, AllowsSell: true}
+}
 
 func TestExecutionRouter_DispatchedSignal_RecordedAndSentToOrderSink(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	engine := newFakeEngine(domain.TickMetrics{StdDev: 1.0, Mean: 2600.0, Ask: 2601.0, Bid: 2600.8})
-	riskMgr := risk.NewRiskManager(0.01, 10000.0, 0.01, 1.0, 0.01, 100.0)
+	riskMgr := risk.NewRiskManager(0.01, 10000.0, 0.01, 1.0, 0.01, 100.0, 2.0, 1.75, false)
 	orderSink := make(chan risk.PreparedOrder, 10)
 	router := pipeline.NewExecutionRouter(engine, riskMgr, nil, orderSink, 1)
 	router.Start(ctx)
@@ -63,7 +66,7 @@ func TestExecutionRouter_SizingRejected_RecordedAndNotDispatched(t *testing.T) {
 
 	// StdDev=0 makes RiskManager.CalculateOrder fail (zero volatility guard).
 	engine := newFakeEngine(domain.TickMetrics{StdDev: 0})
-	riskMgr := risk.NewRiskManager(0.01, 10000.0, 0.01, 1.0, 0.01, 100.0)
+	riskMgr := risk.NewRiskManager(0.01, 10000.0, 0.01, 1.0, 0.01, 100.0, 2.0, 1.75, false)
 	orderSink := make(chan risk.PreparedOrder, 10)
 	router := pipeline.NewExecutionRouter(engine, riskMgr, nil, orderSink, 1)
 	router.Start(ctx)
@@ -87,7 +90,7 @@ func TestExecutionRouter_BlockedByRiskGuard_RecordedAndNotDispatched(t *testing.
 	defer cancel()
 
 	engine := newFakeEngine(domain.TickMetrics{StdDev: 1.0, Mean: 2600.0, Ask: 2601.0, Bid: 2600.8, Spread: 0.2})
-	riskMgr := risk.NewRiskManager(0.01, 10000.0, 0.01, 1.0, 0.01, 100.0)
+	riskMgr := risk.NewRiskManager(0.01, 10000.0, 0.01, 1.0, 0.01, 100.0, 2.0, 1.75, false)
 	guard := risk.NewRiskGuard(risk.RiskGuardConfig{MaxDailyLossPercent: 0.03, MaxSpreadPips: 5.0}, 10000.0)
 	guard.UpdateAccountEquity(9000.0) // trips the circuit breaker
 
@@ -157,7 +160,7 @@ func TestExecutionRouter_DispatchedSignal_WritesOutboxRowBeforeSink(t *testing.T
 	defer cancel()
 
 	engine := newFakeEngine(domain.TickMetrics{StdDev: 1.0, Mean: 2600.0, Ask: 2601.0, Bid: 2600.8})
-	riskMgr := risk.NewRiskManager(0.01, 10000.0, 0.01, 1.0, 0.01, 100.0)
+	riskMgr := risk.NewRiskManager(0.01, 10000.0, 0.01, 1.0, 0.01, 100.0, 2.0, 1.75, false)
 	orderSink := make(chan risk.PreparedOrder, 10)
 	router := pipeline.NewExecutionRouter(engine, riskMgr, nil, orderSink, 1)
 	outbox := newFakeOutboxStore()
@@ -187,7 +190,7 @@ func TestExecutionRouter_DroppedForFullQueue_MarksOutboxRowFailed(t *testing.T) 
 	defer cancel()
 
 	engine := newFakeEngine(domain.TickMetrics{StdDev: 1.0, Mean: 2600.0, Ask: 2601.0, Bid: 2600.8})
-	riskMgr := risk.NewRiskManager(0.01, 10000.0, 0.01, 1.0, 0.01, 100.0)
+	riskMgr := risk.NewRiskManager(0.01, 10000.0, 0.01, 1.0, 0.01, 100.0, 2.0, 1.75, false)
 	orderSink := make(chan risk.PreparedOrder) // unbuffered + no reader => always full
 	router := pipeline.NewExecutionRouter(engine, riskMgr, nil, orderSink, 1)
 	outbox := newFakeOutboxStore()

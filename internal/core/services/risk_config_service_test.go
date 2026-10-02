@@ -28,14 +28,16 @@ func (f *fakeRiskConfigStore) LoadRiskConfig() (domain.RiskConfig, bool, error) 
 
 func validRiskConfig() domain.RiskConfig {
 	return domain.RiskConfig{
-		RiskPerTradePercent: 0.01,
-		MinLotSize:          0.01,
-		MaxLotSize:          0.05,
-		MinSLDistance:       3.0,
-		MaxSLDistance:       20.0,
-		MaxDailyLossPercent: 0.03,
-		MaxOpenPositions:    5,
-		MaxSpreadPips:       5.0,
+		RiskPerTradePercent:  0.01,
+		MinLotSize:           0.01,
+		MaxLotSize:           0.05,
+		MinSLDistance:        3.0,
+		MaxSLDistance:        20.0,
+		VolatilityMultiplier: 2.0,
+		ATRMultiplier:        1.75,
+		MaxDailyLossPercent:  0.03,
+		MaxOpenPositions:     5,
+		MaxSpreadPips:        5.0,
 	}
 }
 
@@ -45,7 +47,7 @@ func validRiskConfig() domain.RiskConfig {
 // normally, be persisted, and actually change RiskManager's live behavior.
 func TestRiskConfigService_SetRiskConfig_PersistsAndAppliesLive(t *testing.T) {
 	store := &fakeRiskConfigStore{}
-	riskManager := risk.NewRiskManager(0.01, 10000.0, 0.01, 0.05, 3.0, 20.0)
+	riskManager := risk.NewRiskManager(0.01, 10000.0, 0.01, 0.05, 3.0, 20.0, 2.0, 1.75, false)
 	riskGuard := risk.NewRiskGuard(risk.RiskGuardConfig{MaxDailyLossPercent: 0.03, MaxOpenPositions: 5, MaxSpreadPips: 5.0}, 10000.0)
 	svc := services.NewRiskConfigService(store, riskManager, riskGuard)
 
@@ -72,7 +74,7 @@ func TestRiskConfigService_SetRiskConfig_PersistsAndAppliesLive(t *testing.T) {
 
 func TestRiskConfigService_SetRiskConfig_RejectsInvalidInput(t *testing.T) {
 	store := &fakeRiskConfigStore{}
-	riskManager := risk.NewRiskManager(0.01, 10000.0, 0.01, 0.05, 3.0, 20.0)
+	riskManager := risk.NewRiskManager(0.01, 10000.0, 0.01, 0.05, 3.0, 20.0, 2.0, 1.75, false)
 	riskGuard := risk.NewRiskGuard(risk.RiskGuardConfig{MaxDailyLossPercent: 0.03, MaxOpenPositions: 5, MaxSpreadPips: 5.0}, 10000.0)
 	svc := services.NewRiskConfigService(store, riskManager, riskGuard)
 
@@ -84,6 +86,8 @@ func TestRiskConfigService_SetRiskConfig_RejectsInvalidInput(t *testing.T) {
 		{"max lot below min lot", func(c *domain.RiskConfig) { c.MaxLotSize = c.MinLotSize - 0.01 }},
 		{"max open positions zero", func(c *domain.RiskConfig) { c.MaxOpenPositions = 0 }},
 		{"max spread pips zero", func(c *domain.RiskConfig) { c.MaxSpreadPips = 0 }},
+		{"volatility multiplier zero", func(c *domain.RiskConfig) { c.VolatilityMultiplier = 0 }},
+		{"atr multiplier zero", func(c *domain.RiskConfig) { c.ATRMultiplier = 0 }},
 	}
 
 	for _, tt := range tests {
@@ -103,7 +107,7 @@ func TestRiskConfigService_SetRiskConfig_RejectsInvalidInput(t *testing.T) {
 
 func TestRiskConfigService_GetRiskConfig_ErrorsWhenNeverSet(t *testing.T) {
 	store := &fakeRiskConfigStore{}
-	riskManager := risk.NewRiskManager(0.01, 10000.0, 0.01, 0.05, 3.0, 20.0)
+	riskManager := risk.NewRiskManager(0.01, 10000.0, 0.01, 0.05, 3.0, 20.0, 2.0, 1.75, false)
 	riskGuard := risk.NewRiskGuard(risk.RiskGuardConfig{MaxDailyLossPercent: 0.03, MaxOpenPositions: 5, MaxSpreadPips: 5.0}, 10000.0)
 	svc := services.NewRiskConfigService(store, riskManager, riskGuard)
 

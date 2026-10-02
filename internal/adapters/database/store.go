@@ -170,6 +170,7 @@ type TradeOutcome struct {
 	Ticket      uint64
 	Profit      float64
 	IsWin       bool
+	Session     string // domain.Session* — main.go คำนวณจาก domain.MarketSessionFromUTC(Timestamp) ก่อนส่งมา
 	Timestamp   time.Time
 }
 
@@ -181,6 +182,7 @@ func (s *Store) SaveTradeOutcome(o TradeOutcome) error {
 		Ticket:      o.Ticket,
 		Profit:      o.Profit,
 		IsWin:       o.IsWin,
+		Session:     o.Session,
 		Timestamp:   o.Timestamp,
 	}
 	if err := s.db.Create(&m).Error; err != nil {
@@ -373,6 +375,56 @@ func (s *Store) WinRateByStrategy() ([]WinRateStat, error) {
 	return out, nil
 }
 
+// SessionWinRateStat สรุปสถิติแพ้/ชนะสะสมของแต่ละ market session (ASIAN/
+// LONDON/LONDON_NY_OVERLAP/NEW_YORK — ดู domain.MarketSessionFromUTC)
+type SessionWinRateStat struct {
+	Session     string  `json:"session"`
+	Wins        int     `json:"wins"`
+	Losses      int     `json:"losses"`
+	TotalTrades int     `json:"total_trades"`
+	WinRate     float64 `json:"win_rate"`
+	TotalProfit float64 `json:"total_profit"`
+}
+
+// WinRateBySession คำนวณ win-rate สะสมของแต่ละ market session จาก
+// trade_outcomes ทั้งหมด — ให้ดูได้ว่า strategy ชุดนี้เวิร์กดีช่วงไหนของวัน
+// (เช่น LiquiditySweepStrategy อาจเวิร์กช่วง Asian ที่ liquidity บาง)
+func (s *Store) WinRateBySession() ([]SessionWinRateStat, error) {
+	type row struct {
+		Session     string
+		Wins        int
+		Losses      int
+		TotalProfit float64
+	}
+
+	var rows []row
+	err := s.db.Model(&TradeOutcomeModel{}).
+		Select("session, SUM(CASE WHEN is_win THEN 1 ELSE 0 END) as wins, SUM(CASE WHEN is_win THEN 0 ELSE 1 END) as losses, SUM(profit) as total_profit").
+		Group("session").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("compute win rate by session: %w", err)
+	}
+
+	out := make([]SessionWinRateStat, len(rows))
+	for i, r := range rows {
+		total := r.Wins + r.Losses
+		var winRate float64
+		if total > 0 {
+			winRate = float64(r.Wins) / float64(total)
+		}
+		out[i] = SessionWinRateStat{
+			Session:     r.Session,
+			Wins:        r.Wins,
+			Losses:      r.Losses,
+			TotalTrades: total,
+			WinRate:     winRate,
+			TotalProfit: r.TotalProfit,
+		}
+	}
+	return out, nil
+}
+
 // --- Risk Config (risk policy ที่ผู้ใช้ตั้งเอง, แยกจาก account balance) ---
 
 var _ services.RiskConfigStore = (*Store)(nil)
@@ -381,15 +433,18 @@ var _ services.RiskConfigStore = (*Store)(nil)
 // PUT /api/v1/risk/config หลัง validate ผ่านแล้ว
 func (s *Store) SaveRiskConfig(cfg domain.RiskConfig) error {
 	m := RiskConfigModel{
-		ID:                  singleRowID,
-		RiskPerTradePercent: cfg.RiskPerTradePercent,
-		MinLotSize:          cfg.MinLotSize,
-		MaxLotSize:          cfg.MaxLotSize,
-		MinSLDistance:       cfg.MinSLDistance,
-		MaxSLDistance:       cfg.MaxSLDistance,
-		MaxDailyLossPercent: cfg.MaxDailyLossPercent,
-		MaxOpenPositions:    cfg.MaxOpenPositions,
-		MaxSpreadPips:       cfg.MaxSpreadPips,
+		ID:                   singleRowID,
+		RiskPerTradePercent:  cfg.RiskPerTradePercent,
+		MinLotSize:           cfg.MinLotSize,
+		MaxLotSize:           cfg.MaxLotSize,
+		MinSLDistance:        cfg.MinSLDistance,
+		MaxSLDistance:        cfg.MaxSLDistance,
+		VolatilityMultiplier: cfg.VolatilityMultiplier,
+		ATRMultiplier:        cfg.ATRMultiplier,
+		UseATRForSizing:      cfg.UseATRForSizing,
+		MaxDailyLossPercent:  cfg.MaxDailyLossPercent,
+		MaxOpenPositions:     cfg.MaxOpenPositions,
+		MaxSpreadPips:        cfg.MaxSpreadPips,
 	}
 	if err := s.db.Save(&m).Error; err != nil {
 		return fmt.Errorf("save risk config: %w", err)
@@ -410,13 +465,90 @@ func (s *Store) LoadRiskConfig() (domain.RiskConfig, bool, error) {
 	}
 
 	return domain.RiskConfig{
-		RiskPerTradePercent: m.RiskPerTradePercent,
-		MinLotSize:          m.MinLotSize,
-		MaxLotSize:          m.MaxLotSize,
-		MinSLDistance:       m.MinSLDistance,
-		MaxSLDistance:       m.MaxSLDistance,
-		MaxDailyLossPercent: m.MaxDailyLossPercent,
-		MaxOpenPositions:    m.MaxOpenPositions,
-		MaxSpreadPips:       m.MaxSpreadPips,
+		RiskPerTradePercent:  m.RiskPerTradePercent,
+		MinLotSize:           m.MinLotSize,
+		MaxLotSize:           m.MaxLotSize,
+		MinSLDistance:        m.MinSLDistance,
+		MaxSLDistance:        m.MaxSLDistance,
+		VolatilityMultiplier: m.VolatilityMultiplier,
+		ATRMultiplier:        m.ATRMultiplier,
+		UseATRForSizing:      m.UseATRForSizing,
+		MaxDailyLossPercent:  m.MaxDailyLossPercent,
+		MaxOpenPositions:     m.MaxOpenPositions,
+		MaxSpreadPips:        m.MaxSpreadPips,
 	}, true, nil
+}
+
+// --- Tick History (ราก auxiliary สำหรับ Order Flow/ATR/backtest ในอนาคต) ---
+
+// SaveTickHistoryBatch insert tick หลายตัวพร้อมกันในคำสั่งเดียว (CreateInBatches
+// แบ่งเป็นชุดละ 500 แถว กัน query เดียวใหญ่เกินไป) — เรียกจาก background
+// recorder goroutine เท่านั้น ไม่เรียกทีละ tick เด็ดขาด (1.7M+ tick/วัน insert
+// ทีละแถวจะหนักเกินจำเป็นมาก)
+func (s *Store) SaveTickHistoryBatch(ticks []domain.Tick) error {
+	if len(ticks) == 0 {
+		return nil
+	}
+
+	models := make([]TickHistoryModel, len(ticks))
+	for i, t := range ticks {
+		models[i] = TickHistoryModel{
+			Symbol:    t.Symbol,
+			Bid:       t.Bid,
+			Ask:       t.Ask,
+			Volume:    t.Volume,
+			Timestamp: t.Timestamp,
+		}
+	}
+
+	if err := s.db.CreateInBatches(models, 500).Error; err != nil {
+		return fmt.Errorf("save tick history batch: %w", err)
+	}
+	return nil
+}
+
+// TickHistorySince คืน tick ทั้งหมดของ symbol นี้ตั้งแต่ since เป็นต้นมา
+// เรียงเก่า→ใหม่ — ใช้ query ตามช่วงเวลา (ไม่ใช่ limit แบบนับแถว) เพราะ
+// ต้องการ "ย้อนหลัง N ชั่วโมง" ที่แน่นอน ไม่ว่า tick rate จริงจะถี่/ห่างแค่ไหน
+// (ดู QuantEngine.Backfill — ใช้ผลลัพธ์นี้ warm up Multi-TF/ATR/CVD/Volume
+// Profile ตอน startup แทนที่จะเริ่มจากศูนย์ทุกครั้งที่ restart)
+func (s *Store) TickHistorySince(symbol string, since time.Time) ([]domain.Tick, error) {
+	var rows []TickHistoryModel
+	if err := s.db.Where("symbol = ? AND timestamp >= ?", symbol, since).Order("timestamp ASC").Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("list tick history since %s: %w", since, err)
+	}
+
+	out := make([]domain.Tick, len(rows))
+	for i, m := range rows {
+		out[i] = domain.Tick{
+			Symbol:    m.Symbol,
+			Bid:       m.Bid,
+			Ask:       m.Ask,
+			Volume:    m.Volume,
+			Timestamp: m.Timestamp,
+		}
+	}
+	return out, nil
+}
+
+// RecentTickHistory คืน tick ล่าสุดของ symbol นี้ เรียงเก่า→ใหม่ (ลำดับเวลา
+// ปกติ พร้อมใช้ replay ตรงๆ) — ยังไม่มีใครเรียกใช้จริงตอนนี้ เตรียมไว้สำหรับ
+// ATR/backtest ที่จะทำต่อ
+func (s *Store) RecentTickHistory(symbol string, limit int) ([]domain.Tick, error) {
+	var rows []TickHistoryModel
+	if err := s.db.Where("symbol = ?", symbol).Order("timestamp DESC").Limit(limit).Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("list recent tick history: %w", err)
+	}
+
+	out := make([]domain.Tick, len(rows))
+	for i, m := range rows {
+		out[len(rows)-1-i] = domain.Tick{
+			Symbol:    m.Symbol,
+			Bid:       m.Bid,
+			Ask:       m.Ask,
+			Volume:    m.Volume,
+			Timestamp: m.Timestamp,
+		}
+	}
+	return out, nil
 }

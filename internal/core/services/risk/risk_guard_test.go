@@ -3,10 +3,53 @@ package risk_test
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/nes224/alphago-mt5/internal/core/domain"
 	"github.com/nes224/alphago-mt5/internal/core/services/risk"
 )
+
+// TestRiskGuard_SetClock_DailyResetFollowsInjectedClockNotWallClock guards
+// against a real bug found while designing the backtest engine:
+// checkDailyResetLocked used to compare against time.Now() unconditionally,
+// so a backtest replaying years of historical trading days in seconds of
+// real wall-clock time would never see a single daily reset fire -- the
+// consecutive-loss lockout (and daily drawdown circuit breaker) would just
+// stay tripped forever after the first bad day, for the rest of a multi-year
+// backtest. SetClock lets a caller (the backtest runner) drive "today" from
+// the simulated timestamp instead.
+func TestRiskGuard_SetClock_DailyResetFollowsInjectedClockNotWallClock(t *testing.T) {
+	cfg := risk.RiskGuardConfig{
+		MaxDailyLossPercent:  0.50, // high enough to not trip on its own here
+		MaxOpenPositions:     5,
+		MaxSpreadPips:        1.0,
+		MaxConsecutiveLosses: 2,
+	}
+	guard := risk.NewRiskGuard(cfg, 10000.0)
+
+	simulatedNow := time.Date(2024, 3, 1, 10, 0, 0, 0, time.UTC)
+	guard.SetClock(func() time.Time { return simulatedNow })
+	// NewRiskGuard stamped lastResetDate from the real wall clock before
+	// SetClock was called -- sync it to "day 1" of the simulated clock first,
+	// otherwise the very next CheckCircuitBreaker call below would see the
+	// injected date as a "new day" vs. the real-wall-clock construction date
+	// and reset immediately, which isn't what this test is exercising.
+	guard.CheckCircuitBreaker()
+
+	// Two losses on "day 1" trips the consecutive-loss lockout.
+	guard.RecordTradeResult(false)
+	guard.RecordTradeResult(false)
+	if err := guard.CheckCircuitBreaker(); err == nil {
+		t.Fatal("expected consecutive-loss lockout to be tripped after 2 losses")
+	}
+
+	// Advance the injected clock to the next calendar day -- the daily reset
+	// should clear the lockout, exactly like it would live at midnight.
+	simulatedNow = simulatedNow.Add(24 * time.Hour)
+	if err := guard.CheckCircuitBreaker(); err != nil {
+		t.Fatalf("expected daily reset on the injected clock's new day to clear the lockout, got: %v", err)
+	}
+}
 
 func TestRiskGuard_DailyDrawdown_CircuitBreaker(t *testing.T) {
 	cfg := risk.RiskGuardConfig{

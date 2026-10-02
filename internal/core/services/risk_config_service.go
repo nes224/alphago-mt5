@@ -41,7 +41,7 @@ func (s *RiskConfigService) SetRiskConfig(ctx context.Context, req domain.RiskCo
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	s.riskManager.UpdateConfig(req.RiskPerTradePercent, req.MinLotSize, req.MaxLotSize, req.MinSLDistance, req.MaxSLDistance)
+	s.riskManager.UpdateConfig(req.RiskPerTradePercent, req.MinLotSize, req.MaxLotSize, req.MinSLDistance, req.MaxSLDistance, req.VolatilityMultiplier, req.ATRMultiplier, req.UseATRForSizing)
 	s.riskGuard.UpdateConfig(req.MaxDailyLossPercent, req.MaxOpenPositions, req.MaxSpreadPips)
 
 	if err := s.store.SaveRiskConfig(req); err != nil {
@@ -80,6 +80,10 @@ func validateRiskConfig(req domain.RiskConfig) error {
 		return fmt.Errorf("min_sl_distance must be greater than 0")
 	case req.MaxSLDistance < req.MinSLDistance:
 		return fmt.Errorf("max_sl_distance must be >= min_sl_distance")
+	case req.VolatilityMultiplier <= 0:
+		return fmt.Errorf("volatility_multiplier must be greater than 0")
+	case req.ATRMultiplier <= 0:
+		return fmt.Errorf("atr_multiplier must be greater than 0")
 	case req.MaxDailyLossPercent <= 0 || req.MaxDailyLossPercent > 1:
 		return fmt.Errorf("max_daily_loss_percent must be between 0 and 1")
 	case req.MaxOpenPositions < 1:

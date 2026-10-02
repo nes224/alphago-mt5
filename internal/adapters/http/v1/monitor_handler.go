@@ -39,8 +39,9 @@ func (h *MonitorHandler) Status(c *gin.Context) {
 	metrics := h.engine.GetLatestMetrics(h.symbol)
 
 	resp := gin.H{
-		"symbol":  h.symbol,
-		"metrics": metrics,
+		"symbol":          h.symbol,
+		"metrics":         metrics,
+		"multi_timeframe": h.engine.GetMultiTimeframeState(h.symbol),
 	}
 	if h.riskGuard != nil {
 		resp["risk_guard"] = h.riskGuard.Status()
@@ -57,7 +58,8 @@ func (h *MonitorHandler) RecentSignals(c *gin.Context) {
 	})
 }
 
-// GET /api/v1/strategy-stats — win-rate สะสมต่อ strategy จาก trade_outcomes
+// GET /api/v1/strategy-stats — win-rate สะสมต่อ strategy และต่อ market
+// session (ASIAN/LONDON/LONDON_NY_OVERLAP/NEW_YORK) จาก trade_outcomes
 // (ต้องมี trade_closed event จาก EA ไหลเข้ามาก่อนถึงจะมีข้อมูล)
 func (h *MonitorHandler) StrategyStats(c *gin.Context) {
 	stats, err := h.store.WinRateByStrategy()
@@ -66,8 +68,15 @@ func (h *MonitorHandler) StrategyStats(c *gin.Context) {
 		return
 	}
 
+	sessionStats, err := h.store.WinRateBySession()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"strategies": stats,
+		"sessions":   sessionStats,
 	})
 }
 
