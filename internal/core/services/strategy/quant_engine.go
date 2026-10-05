@@ -20,12 +20,12 @@ type dailyRange struct {
 
 type QuantEngine struct {
 	mu            sync.RWMutex
-	strategies    []ports.QuantStrategy
-	latestMetrics map[string]domain.TickMetrics
-	tickChan      chan domain.Tick
-	signalChan    chan domain.OrderSignal
-	lastTickMap   map[string]domain.Tick
-	windows       map[string]*Window
+	strategies    []ports.QuantStrategy // list ของ strategy ที่ลงทะเบียนไว้ (VolumeExpansionStrategy, LiquiditySweepStrategy) ถูกเรียก OnTick ทุก tick
+	latestMetrics map[string]domain.TickMetrics // — metrics ล่าสุดของแต่ละ symbol (key=symbol) ที่ /api/v1/status ดึงไปโชว์
+	tickChan      chan domain.Tick // signalChan||tickChan — channel รับ tick เข้า (PushTick) และส่ง signal ออก (ExecutionRouter ดึงไปคำนวณ order)
+	signalChan    chan domain.OrderSignal 
+	lastTickMap   map[string]domain.Tick // tick ก่อนหน้าของแต่ละ symbol ใช้คำนวณ delta/velocity (ราคา, volume, OI เทียบกับ tick ก่อน)
+	windows       map[string]*Window // windows / windowSize — window นับทีละ tick (default 20 ตัว) ใช้คำนวณ Mean/StdDev/ZScore/TrendSlope
 	windowSize    int
 	longTermWindows    map[string]*Window
 	longTermWindowSize int

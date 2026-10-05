@@ -54,16 +54,23 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	// init mt5 and connect to mt5
 	mt5Adapter, streamAdapter := initMT5Adapters(cfg)
 	defer mt5Adapter.Close()
 	defer streamAdapter.Close()
 
+	// fetch data acc from mt5
 	liveAccountInfo := fetchLiveAccountInfo(ctx, mt5Adapter)
 
+	// connect database
 	store := connectDatabase(cfg)
+	// init account
 	accountBalance := loadOrSeedAccountBalance(store, cfg, liveAccountInfo)
+
+	// calculate risk from database if it exist
 	riskCfg := loadOrSeedRiskConfig(store, cfg)
 
+	// init quant strategy
 	quantEngine := setupQuantEngine()
 	backfillQuantEngineState(quantEngine, store, TradingSymbol)
 	riskGuard, riskManager := setupRiskManagement(store, riskCfg, accountBalance)
