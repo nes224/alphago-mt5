@@ -1,0 +1,70 @@
+package domain
+
+import "time"
+
+// Tick ราคาหนึ่งจังหวะจาก MT5
+type Tick struct {
+	Symbol string
+	Bid    float64
+	Ask    float64
+	Volume int64
+	Time   time.Time // server ของ broker
+}
+
+func (t Tick) Mid() float64 { return (t.Bid + t.Ask) / 2 }
+
+func (t Tick) Spread() float64 { return t.Ask - t.Bid }
+
+type Timeframe string
+
+const (
+	TimeframeM1    Timeframe = "M1"
+	TimeframeM5    Timeframe = "M5"
+	TimeframeM15   Timeframe = "M15"
+	TimeframeM30   Timeframe = "M30"
+	TimeframeH1    Timeframe = "H1"
+	TimeframeH4    Timeframe = "H4"
+	TimeframeDaily Timeframe = "Daily"
+)
+
+// Duration คืนความยาวของ TF
+func (tf Timeframe) Duration() time.Duration {
+	switch tf {
+	case TimeframeM1:
+		return time.Minute
+	case TimeframeM5:
+		return time.Minute * 5
+	case TimeframeM15:
+		return time.Minute * 15
+	case TimeframeM30:
+		return time.Minute * 30
+	case TimeframeH1:
+		return time.Hour
+	case TimeframeH4:
+		return time.Hour * 4
+	case TimeframeDaily:
+		return time.Duration(time.Now().Day())
+	default:
+		return time.Hour
+	}
+}
+
+type Candle struct {
+	Symbol    string
+	Timeframe Timeframe
+	OpenTime  time.Time
+	Open      float64
+	High      float64
+	Low       float64
+	Close     float64
+	TickCount int
+	Volume    int64
+	Closed    bool
+}
+
+type TradeClosed struct {
+	Symbol string
+	Ticket uint64
+	Profit float64
+	Time   time.Time
+}
