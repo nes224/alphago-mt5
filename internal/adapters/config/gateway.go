@@ -1,0 +1,63 @@
+package config
+
+import (
+	"fmt"
+	"net"
+	"os"
+	"strconv"
+)
+
+type GateWay struct {
+	MT5Host       string
+	MT5StreamPort int
+	MT5CmdPort    int
+	HTTPPort      int
+	LogLevel      string
+}
+
+func (g GateWay) StreamAddr() string {
+	return net.JoinHostPort(g.MT5Host, strconv.Itoa(g.MT5StreamPort))
+}
+
+func LoadGateway() (GateWay, error) {
+	var err error
+	g := GateWay{
+		MT5Host:  envStr("MT5_HOST", "127.0.0.1"),
+		LogLevel: envStr("LOG_LEVEL", "info"),
+	}
+
+	if g.MT5StreamPort, err = envInt("MT5_STREAM_PORT", 5556); err != nil {
+		return g, err
+	}
+
+	if g.MT5CmdPort, err = envInt("MT5_PORT", 5555); err != nil {
+		return g, err
+	}
+
+	if g.HTTPPort, err = envInt("GATEWAY_HTTP_PORT", 8081); err != nil {
+		return g, err
+	}
+
+	return g, nil
+}
+
+func envStr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func envInt(key string, def int) (int, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("config: %s=%q is not an integer", key, v)
+	}
+	return n, nil
+}
+
+
