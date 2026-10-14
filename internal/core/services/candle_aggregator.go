@@ -64,6 +64,7 @@ func (a *CandleAggregator) OnTick(t domain.Tick) CandleUpdate {
 	return CandleUpdate{Closed: closed, Current: *cur}
 }
 
+// Current คืน snapshot แท่งที่กำลังก่อตัวของ symbol (ok=false ถ้ายังไม่เคยมี tick)
 func (a *CandleAggregator) Current(symbol string) (domain.Candle, bool) {
 	c, ok := a.current[symbol]
 	if !ok {
