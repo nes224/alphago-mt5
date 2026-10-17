@@ -31,21 +31,21 @@ const (
 func (tf Timeframe) Duration() time.Duration {
 	switch tf {
 	case TimeframeM1:
-		return time.Minute
+		return 1
 	case TimeframeM5:
-		return time.Minute * 5
+		return 5
 	case TimeframeM15:
-		return time.Minute * 15
+		return 15
 	case TimeframeM30:
-		return time.Minute * 30
+		return 30
 	case TimeframeH1:
-		return time.Hour
+		return 60
 	case TimeframeH4:
-		return time.Hour * 4
+		return 240
 	case TimeframeDaily:
-		return time.Duration(time.Now().Day())
+		return 1440
 	default:
-		return time.Hour
+		return 0
 	}
 }
 
