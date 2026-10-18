@@ -1,6 +1,10 @@
 package services
 
-import "github.com/nes224/alphago-mt5/internal/core/domain"
+import (
+	"time"
+
+	"github.com/nes224/alphago-mt5/internal/core/domain"
+)
 
 type CandleAggregator struct {
 	tf      domain.Timeframe
@@ -8,7 +12,7 @@ type CandleAggregator struct {
 }
 
 func NewCandleAggregator(tf domain.Timeframe) *CandleAggregator {
-	if tf.Duration() <= 0 {
+	if tf.Minutes() <= 0 {
 		panic("candle aggregator: unsupported timeframe " + string(tf))
 	}
 	return &CandleAggregator{tf: tf, current: make(map[string]*domain.Candle)}
@@ -22,7 +26,7 @@ type CandleUpdate struct {
 
 // OnTick ป้อน tick เข้าไป แล้วคืนแท่งที่ปิด + แท่งปัจจุบัน
 func (a *CandleAggregator) OnTick(t domain.Tick) CandleUpdate {
-	openTime := t.Time.Truncate(a.tf.Duration())
+	openTime := t.Time.Truncate(time.Duration(a.tf.Minutes()))
 	price := t.Bid
 
 	cur, ok := a.current[t.Symbol]

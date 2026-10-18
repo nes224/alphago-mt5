@@ -28,7 +28,7 @@ const (
 )
 
 // Duration คืนความยาวของ TF
-func (tf Timeframe) Duration() time.Duration {
+func (tf Timeframe) Minutes() int {
 	switch tf {
 	case TimeframeM1:
 		return 1
