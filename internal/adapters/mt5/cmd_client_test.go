@@ -1,9 +1,10 @@
-package mt5_test
+package mt5
 
 import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -68,4 +69,12 @@ func (f *fakeEA) serve() {
 			}
 		}()
 	}
+}
+
+func quiteLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+func newTestClient(addr string, timeout time.Duration) *CommandClient {
+	c := NewCommandClient(addr, timeout, quiteLog())
+	c.ratesRetryWait = 5 * time.Millisecond
+	return c
 }
