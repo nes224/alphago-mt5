@@ -2,6 +2,7 @@ package mt5
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/nes224/alphago-mt5/internal/core/domain"
 )
 
 type fakeEA struct {
@@ -90,4 +93,33 @@ func ratesJSON(serevrTime int64, hasMore bool, nextFrom int64, bars ...int64) st
 	}
 	return fmt.Sprintf(`{"status": "SUCCESS", "symbol": "XAUUSDm", "tf":1, "server_time":%d, "count":%d}, "has_more":%v, "next_from": %d, "rates":[%s]`,
 		serevrTime, len(bars), hasMore, nextFrom, strings.Join(rows, ","))
+}
+
+func TestRatesPage_ParsesEAResponse(t *testing.T) {
+	var got map[string]any
+	ea := newFakeEA(t, func(_ int, req map[string]any) string {
+		got = req
+		return ratesJSON(t0+150, false, 0, t0, t0+60, t0+120)
+	})
+	c := newTestClient(ea.addr(), time.Second)
+
+	page, err := c.RatesPage(context.Background(), "XAUUSDm",  domain.TimeframeM1, time.Unix(t0, 0).UTC(), time.Time{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got["action"] != "RATES" || got["tf"] != float64(1) || got["from"] != float64(t0) || got["to"] != nil {
+		t.Errorf("request = %v", got)
+	}
+	if len(page.Candles) != 3 {
+		t.Fatalf("candles = %d", len(page.Candles))
+	}
+
+	first := page.Candles[0]
+	if first.OpenTime != time.Unix(t0, 0).UTC() || first.Open != 4178.279 || first.Close != 4178.036 || first.TickCount != 179 {
+		t.Errorf("first = %+v", first)
+	}
+	if !page.Candles[0].Closed || !page.Candles[1].Closed || page.Candles[2].Closed {
+		t.Errorf("closed flags = %v %v %v", page.Candles[0].Closed, page.Candles[1].Closed, page.Candles[2].Closed)
+	}
 }
