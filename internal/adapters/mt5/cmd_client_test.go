@@ -123,3 +123,40 @@ func TestRatesPage_ParsesEAResponse(t *testing.T) {
 		t.Errorf("closed flags = %v %v %v", page.Candles[0].Closed, page.Candles[1].Closed, page.Candles[2].Closed)
 	}
 }
+
+func TestRates_FollowsPagesUntilDone(t *testing.T) {
+	var froms []int64
+	ea := newFakeEA(t, func(_ int, req map[string]any) string {
+		from := int64(req["from"].(float64))
+		froms = append(froms, from)
+		switch from {
+		case t0:
+			return ratesJSON(t0+600, true, t0+120, t0, t0+60)
+		case t0 + 120:
+			return ratesJSON(t0+600, true, t0+240, t0+120, t0+180)
+		case t0 + 240:
+			return ratesJSON(t0+600, false, 0, t0+240)
+		}
+		return `{"status": "FAILED", "message": "unexpected from"}`
+	})
+	c := newTestClient(ea.addr(), time.Second)
+
+	candles, err := c.Rates(context.Background(), "XAUUSDm", domain.TimeframeM1, time.Unix(t0, 0).UTC(), time.Unix(t0+600, 0).UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candles) != 5 {
+		t.Fatalf("candles = %d, want 5", len(candles))
+	}
+
+	for i, c := range candles {
+		if want := time.Unix(t0+int64(i)*60, 0).UTC(); c.OpenTime != want {
+			t.Errorf("candle %d open = %v, want %v", i, c.OpenTime, want)
+		}
+	}
+
+	if len(froms) != 3 || ea.conns.Load() != 1 {
+		t.Errorf("requests froms=%v conns=%d (should reuse existing connection)", froms, ea.conns.Load())
+	}
+
+}
