@@ -3,9 +3,11 @@ package mt5
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -77,4 +79,15 @@ func newTestClient(addr string, timeout time.Duration) *CommandClient {
 	c := NewCommandClient(addr, timeout, quiteLog())
 	c.ratesRetryWait = 5 * time.Millisecond
 	return c
+}
+
+const t0 = int64(1792133160) // 2026-10-16T06:46:00 เวลา server
+
+func ratesJSON(serevrTime int64, hasMore bool, nextFrom int64, bars ...int64) string {
+	rows := make([]string, len(bars))
+	for i, ts := range bars {
+		rows[i] = fmt.Sprintf("[%d, 4178.279, 4178.757, 4177.466, 4178.036,179]", ts)
+	}
+	return fmt.Sprintf(`{"status": "SUCCESS", "symbol": "XAUUSDm", "tf":1, "server_time":%d, "count":%d}, "has_more":%v, "next_from": %d, "rates":[%s]`,
+		serevrTime, len(bars), hasMore, nextFrom, strings.Join(rows, ","))
 }
