@@ -160,3 +160,21 @@ func TestRates_FollowsPagesUntilDone(t *testing.T) {
 	}
 
 }
+
+func TestRates_RetriesWhileHistoryLoading(t *testing.T) {
+	var calls atomic.Int32
+	ea := newFakeEA(t, func(_ int, _ map[string]any) string {
+		if calls.Add(1) <= 2 {
+			return `{"status": "FAILED", "ticket":0, "message": "CopyRates failed. Error: 4401", "executed_price": 0.00000}`
+		}
+		return ratesJSON(t0+600, false, 0, t0)
+	})
+	c := newTestClient(ea.addr(), time.Second)
+	candles, err := c.Rates(context.Background(), "XAUUSDm", domain.TimeframeM1, time.Unix(t0, 0).UTC(), time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candles) != 1 || calls.Load() != 3 {
+		t.Errorf("candles=%d calls=%d", len(candles), calls.Load())
+	}
+}
