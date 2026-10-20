@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -264,6 +265,31 @@ func TestCall_ReconnectsAfterEAClosesConnection(t *testing.T) {
 
 	if _, err := c.RatesPage(context.Background(), "XAUUSDm", domain.TimeframeM1, from, time.Time{}, 0); err != nil {
 		t.Fatalf("after reconenct: %v", err)
+	}
+
+}
+
+func TestCall_SerializesConcurrentCommands(t *testing.T) {
+	ea := newFakeEA(t, func(_ int, _ map[string]any) string {
+		return ratesJSON(t0+600, false, 0, t0)
+	})
+
+	c := newTestClient(ea.addr(), time.Second)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := c.RatesPage(context.Background(), "XAUUSDm", domain.TimeframeM1, time.Unix(t0, 0).UTC(), time.Time{},0); err != nil {
+				t.Error(err)
+			}
+		}()
+
+		wg.Wait()
+		if ea.overlap.Load() {
+			t.Fatal("EA received a command before answering the previous one")
+		}
 	}
 	
 }
