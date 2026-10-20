@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -176,5 +177,23 @@ func TestRates_RetriesWhileHistoryLoading(t *testing.T) {
 	}
 	if len(candles) != 1 || calls.Load() != 3 {
 		t.Errorf("candles=%d calls=%d", len(candles), calls.Load())
+	}
+}
+
+func TestRates_NonRetryableErrorReturnsImmediately(t *testing.T) {
+	var calls atomic.Int32
+	ea := newFakeEA(t, func(_ int, _ map[string]any) string {
+		calls.Add(1)
+		return `{"status":"FAILED", "ticket":0, "message": "Unknown symbol: XAUUSD", "executed_price":0.00000}`
+	})
+	c := newTestClient(ea.addr(), time.Second)
+
+	_, err := c.Rates(context.Background(), "XAUUSD", domain.TimeframeM1, time.Unix(t0, 0).UTC(), time.Time{})
+	var eaErr *EAError
+	if !errors.As(err, &eaErr) || eaErr.Message != "Unknown symbol: XAUUSD" {
+		t.Fatalf("err = %v", err)
+	}
+	if calls.Load() != 1 {
+		t.Errorf("calls = %d, want 1 (should'nt retry)", calls.Load())
 	}
 }
