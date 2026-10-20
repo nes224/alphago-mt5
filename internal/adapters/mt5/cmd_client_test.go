@@ -291,5 +291,22 @@ func TestCall_SerializesConcurrentCommands(t *testing.T) {
 			t.Fatal("EA received a command before answering the previous one")
 		}
 	}
-	
+
+}
+
+func TestCall_ContextCancelUnblocks(t *testing.T) {
+	ea := newFakeEA(t, func(int, map[string]any) string { return ""})
+	c := newTestClient(ea.addr(), 10 * time.Second ) 
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50 * time.Millisecond, cancel)
+	start := time.Now()
+	_, err := c.Call(ctx, map[string]string{"action" :"ACCOUNT_INFO"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v", err)
+	}
+
+	if time.Since(start) > time.Second {
+		t.Errorf("cancel took %v", time.Since(start))
+	}
 }
