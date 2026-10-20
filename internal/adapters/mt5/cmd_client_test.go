@@ -206,3 +206,35 @@ func TestRates_UnsupportedTimeframe(t *testing.T) {
 
 }
 
+func TestCall_TimeoutDropsConenctionAndReconnects(t *testing.T) {
+	ea := newFakeEA(t, func(conn int, _ map[string]any) string {
+		if conn == 1 {
+			return ""
+		}
+		return ratesJSON(t0+600, false, 0, t0)
+	})
+	c := newTestClient(ea.addr(), 100 * time.Millisecond)
+
+	start := time.Now()
+	_, err := c.RatesPage(context.Background(), "XAUUSDm", domain.TimeframeM1, time.Unix(t0, 0).UTC(), time.Time{}, 0)
+	if err == nil || !strings.Contains(err.Error(), "did not respond") {
+		t.Fatalf("err = %v", err)
+	}
+
+	if time.Since(start) > time.Second {
+		t.Errorf("timeout took %v", time.Since(start))
+	}
+
+	if c.Connected() {
+		t.Error("connection should be dropped after timeout")
+	}
+
+	page, err := c.RatesPage(context.Background(), "XAUUSDm", domain.TimeframeM1, time.Unix(t0, 0).UTC(), time.Time{},0)
+	if err != nil || len(page.Candles) != 1 {
+		t.Fatalf("after reconnect: page=%+v err=%v", page, err)
+	}
+
+	if ea.conns.Load() != 2 {
+		t.Errorf("conns = %d, want 2", ea.conns.Load())
+	}
+}
