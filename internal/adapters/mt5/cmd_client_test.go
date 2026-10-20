@@ -238,3 +238,32 @@ func TestCall_TimeoutDropsConenctionAndReconnects(t *testing.T) {
 		t.Errorf("conns = %d, want 2", ea.conns.Load())
 	}
 }
+
+func TestCall_ReconnectsAfterEAClosesConnection(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	go func() {
+		conn, _ := ln.Accept()
+		conn.Close()
+		conn, _ = ln.Accept()
+		rd := bufio.NewReader(conn)
+		rd.ReadBytes('\n')
+		io.WriteString(conn, ratesJSON(t0+600, false, 0, t0)+"\n")
+	}()
+
+	c := newTestClient(ln.Addr().String(), time.Second)
+	from := time.Unix(t0, 0).UTC()
+	if _, err := c.RatesPage(context.Background(), "XAUUSDm", domain.TimeframeM1, from, time.Time{}, 0); err == nil {
+		t.Fatal("expected error from closed connection")
+	}
+
+	if _, err := c.RatesPage(context.Background(), "XAUUSDm", domain.TimeframeM1, from, time.Time{}, 0); err != nil {
+		t.Fatalf("after reconenct: %v", err)
+	}
+	
+}
