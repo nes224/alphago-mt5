@@ -197,3 +197,12 @@ func TestRates_NonRetryableErrorReturnsImmediately(t *testing.T) {
 		t.Errorf("calls = %d, want 1 (should'nt retry)", calls.Load())
 	}
 }
+
+func TestRates_UnsupportedTimeframe(t *testing.T) {
+	c := newTestClient("127.0.0.1:1", time.Second)
+	if _, err := c.Rates(context.Background(), "XAUUSDm", "W1", time.Unix(t0, 0).UTC(), time.Time{}); err == nil {
+		t.Fatal("expected error")
+	}
+
+}
+
