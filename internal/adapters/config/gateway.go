@@ -5,12 +5,14 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"time"
 )
 
 type GateWay struct {
 	MT5Host       string
 	MT5StreamPort int
 	MT5CmdPort    int
+	MT5Timeout    time.Duration
 	HTTPPort      int
 	LogLevel      string
 }
@@ -59,5 +61,3 @@ func envInt(key string, def int) (int, error) {
 	}
 	return n, nil
 }
-
-
