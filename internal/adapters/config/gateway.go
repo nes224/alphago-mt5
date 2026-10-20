@@ -21,6 +21,10 @@ func (g GateWay) StreamAddr() string {
 	return net.JoinHostPort(g.MT5Host, strconv.Itoa(g.MT5StreamPort))
 }
 
+func (g GateWay) CmdAddr() string {
+	return net.JoinHostPort(g.MT5Host, strconv.Itoa(g.MT5CmdPort))
+}
+
 func LoadGateway() (GateWay, error) {
 	var err error
 	g := GateWay{
