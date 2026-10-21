@@ -41,5 +41,15 @@ func TestFilePath_NewDayNewFile(t *testing.T) {
 	if last == first {
 		t.Fatalf("expected different files, both are %s", last)
 	}
-	
+
+}
+
+// เวลาที่ไม่ใช่ UTC ต้องถูกแปลงเป็น UTC ก่อนตั้งชื่อ (วันของ broker = วันตาม UTC)
+func TestFilePath_UsesUTCDay(t *testing.T) {
+	bangkok := time.FixedZone("ICT", 7 * 3600)
+
+	got, _ := FilePath("data", "XAUUSDm", domain.TimeframeM1, time.Date(2026, 10, 22, 2, 0, 0, 0, bangkok))
+	if filepath.Base(got) != "2026-10-21.csv" {
+		t.Errorf("got %s", got)
+	}
 }
