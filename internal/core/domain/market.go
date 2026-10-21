@@ -10,6 +10,25 @@ type Tick struct {
 	Volume int64
 	Time   time.Time // server ของ broker
 }
+type Candle struct {
+	Symbol    string
+	Timeframe Timeframe
+	OpenTime  time.Time
+	Open      float64
+	High      float64
+	Low       float64
+	Close     float64
+	TickCount int
+	Volume    int64
+	Closed    bool
+}
+
+type TradeClosed struct {
+	Symbol string
+	Ticket uint64
+	Profit float64
+	Time   time.Time
+}
 
 func (t Tick) Mid() float64 { return (t.Bid + t.Ask) / 2 }
 
@@ -49,22 +68,4 @@ func (tf Timeframe) Minutes() int {
 	}
 }
 
-type Candle struct {
-	Symbol    string
-	Timeframe Timeframe
-	OpenTime  time.Time
-	Open      float64
-	High      float64
-	Low       float64
-	Close     float64
-	TickCount int
-	Volume    int64
-	Closed    bool
-}
-
-type TradeClosed struct {
-	Symbol string
-	Ticket uint64
-	Profit float64
-	Time   time.Time
-}
+func (tf Timeframe) Duration() time.Duration { return time.Duration(tf.Minutes() * int(time.Minute)) }
