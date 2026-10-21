@@ -35,4 +35,11 @@ func TestFilePath(t *testing.T) {
 	}
 }
 
-
+func TestFilePath_NewDayNewFile(t *testing.T) {
+	last, _ := FilePath("data", "XAUUSDm", domain.TimeframeM1, time.Date(2026, 10, 21, 23, 59, 0, 0, time.UTC))
+	first, _ := FilePath("data", "XAUUSDm", domain.TimeframeM1, time.Date(2026, 10 ,22 ,0, 0, 0, 0, time.UTC))
+	if last == first {
+		t.Fatalf("expected different files, both are %s", last)
+	}
+	
+}
