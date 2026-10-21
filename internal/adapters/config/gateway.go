@@ -40,6 +40,17 @@ func LoadGateway() (GateWay, error) {
 		return g, err
 	}
 
+	timeoutSec, err := envInt("MT5_TIMEOUT_SECONDS", 10)
+	if err != nil {
+		return g, err
+	}
+
+	if timeoutSec <= 0 {
+		return g, fmt.Errorf("config: MT5_TIMEOUT_SECONDS must be > 0, got %d", timeoutSec)
+	}
+
+	g.MT5Timeout = time.Duration(timeoutSec) * time.Second
+
 	if g.HTTPPort, err = envInt("GATEWAY_HTTP_PORT", 8081); err != nil {
 		return g, err
 	}

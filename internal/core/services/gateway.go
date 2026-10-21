@@ -64,4 +64,3 @@ func (s *GatewayService) Stats() GatewayStats {
 
 	return st
 }
-

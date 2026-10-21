@@ -66,7 +66,7 @@ func run(symbol string, tf domain.Timeframe, back time.Duration) error {
 	start := time.Now()
 	candles, err := client.Rates(ctx, symbol, tf, from, now)
 	if err != nil {
-		return  err
+		return err
 	}
 
 	closed := 0
@@ -83,7 +83,7 @@ func run(symbol string, tf domain.Timeframe, back time.Duration) error {
 	fmt.Printf("candles %d (closed %d, doing %d) in %v\n", len(candles), closed, len(candles)-closed, time.Since(start).Round(time.Millisecond))
 	if len(candles) == 0 {
 		fmt.Println("(There is no candle stick in time period - market closed?)")
-		return  nil
+		return nil
 	}
 
 	fmt.Println()
@@ -96,17 +96,16 @@ func run(symbol string, tf domain.Timeframe, back time.Duration) error {
 			show(c)
 		}
 
-		return  nil
+		return nil
 	}
 
 	for _, c := range candles[:3] {
 		show(c)
 	}
 
-	fmt.Printf("... (%d candlestick) ...\n", len(candles) - 6)
+	fmt.Printf("... (%d candlestick) ...\n", len(candles)-6)
 	for _, c := range candles[len(candles)-3:] {
 		show(c)
 	}
 	return nil
 }
-

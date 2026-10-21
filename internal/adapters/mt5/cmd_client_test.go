@@ -105,7 +105,7 @@ func TestRatesPage_ParsesEAResponse(t *testing.T) {
 	})
 	c := newTestClient(ea.addr(), time.Second)
 
-	page, err := c.RatesPage(context.Background(), "XAUUSDm",  domain.TimeframeM1, time.Unix(t0, 0).UTC(), time.Time{}, 0)
+	page, err := c.RatesPage(context.Background(), "XAUUSDm", domain.TimeframeM1, time.Unix(t0, 0).UTC(), time.Time{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +214,7 @@ func TestCall_TimeoutDropsConenctionAndReconnects(t *testing.T) {
 		}
 		return ratesJSON(t0+600, false, 0, t0)
 	})
-	c := newTestClient(ea.addr(), 100 * time.Millisecond)
+	c := newTestClient(ea.addr(), 100*time.Millisecond)
 
 	start := time.Now()
 	_, err := c.RatesPage(context.Background(), "XAUUSDm", domain.TimeframeM1, time.Unix(t0, 0).UTC(), time.Time{}, 0)
@@ -230,7 +230,7 @@ func TestCall_TimeoutDropsConenctionAndReconnects(t *testing.T) {
 		t.Error("connection should be dropped after timeout")
 	}
 
-	page, err := c.RatesPage(context.Background(), "XAUUSDm", domain.TimeframeM1, time.Unix(t0, 0).UTC(), time.Time{},0)
+	page, err := c.RatesPage(context.Background(), "XAUUSDm", domain.TimeframeM1, time.Unix(t0, 0).UTC(), time.Time{}, 0)
 	if err != nil || len(page.Candles) != 1 {
 		t.Fatalf("after reconnect: page=%+v err=%v", page, err)
 	}
@@ -281,7 +281,7 @@ func TestCall_SerializesConcurrentCommands(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := c.RatesPage(context.Background(), "XAUUSDm", domain.TimeframeM1, time.Unix(t0, 0).UTC(), time.Time{},0); err != nil {
+			if _, err := c.RatesPage(context.Background(), "XAUUSDm", domain.TimeframeM1, time.Unix(t0, 0).UTC(), time.Time{}, 0); err != nil {
 				t.Error(err)
 			}
 		}()
@@ -295,13 +295,13 @@ func TestCall_SerializesConcurrentCommands(t *testing.T) {
 }
 
 func TestCall_ContextCancelUnblocks(t *testing.T) {
-	ea := newFakeEA(t, func(int, map[string]any) string { return ""})
-	c := newTestClient(ea.addr(), 10 * time.Second ) 
+	ea := newFakeEA(t, func(int, map[string]any) string { return "" })
+	c := newTestClient(ea.addr(), 10*time.Second)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(50 * time.Millisecond, cancel)
+	time.AfterFunc(50*time.Millisecond, cancel)
 	start := time.Now()
-	_, err := c.Call(ctx, map[string]string{"action" :"ACCOUNT_INFO"})
+	_, err := c.Call(ctx, map[string]string{"action": "ACCOUNT_INFO"})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v", err)
 	}

@@ -123,7 +123,7 @@ func (c *CommandClient) wrapIOErr(ctx context.Context, op string, err error) err
 	return fmt.Errorf("%s: %w", op, err)
 }
 
-func (c *CommandClient) Call(ctx context.Context, req any) ([]byte, error) { 
+func (c *CommandClient) Call(ctx context.Context, req any) ([]byte, error) {
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("encode request: %w", err)
@@ -150,7 +150,7 @@ func (c *CommandClient) Call(ctx context.Context, req any) ([]byte, error) {
 	_ = c.conn.SetDeadline(deadline)
 
 	conn := c.conn
-	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now())})
+	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()) })
 	defer stop()
 
 	if _, err := c.conn.Write(payload); err != nil {

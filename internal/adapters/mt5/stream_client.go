@@ -143,20 +143,20 @@ func parseEvent(line []byte) (any, error) {
 			return nil, fmt.Errorf("invalid price bid=%v ask=%v", w.Bid, w.Ask)
 		}
 		return domain.Tick{
-			Symbol: w.Symbol, 
-			Bid: w.Bid,
-			Ask: w.Ask,
+			Symbol: w.Symbol,
+			Bid:    w.Bid,
+			Ask:    w.Ask,
 			Volume: w.Volume,
-			Time: ts,
+			Time:   ts,
 		}, nil
-		case "trade_closed":
-			return domain.TradeClosed{
-				Symbol: w.Symbol,
-				Ticket: w.Ticket,
-				Profit: w.Profit,
-				Time: ts,
-			}, nil
-		default:
-			return nil, fmt.Errorf("unknown event type %q", w.Type)
+	case "trade_closed":
+		return domain.TradeClosed{
+			Symbol: w.Symbol,
+			Ticket: w.Ticket,
+			Profit: w.Profit,
+			Time:   ts,
+		}, nil
+	default:
+		return nil, fmt.Errorf("unknown event type %q", w.Type)
 	}
 }

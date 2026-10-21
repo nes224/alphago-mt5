@@ -74,13 +74,6 @@ func run() error {
 	}()
 
 	go func() {
-		log.Info("http listening", "addr", srv.Addr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errc <- fmt.Errorf("http: %w", err)
-		}
-	}()
-
-	go func() {
 		log.Info("connecting to EA", "stream", cfg.StreamAddr())
 		if err := stream.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			errc <- fmt.Errorf("mt5 stream: %w", err)

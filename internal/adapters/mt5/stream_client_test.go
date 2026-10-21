@@ -79,7 +79,7 @@ func TestStreamClient_ReconnectsAfterEADrops(t *testing.T) {
 	defer In.Close()
 
 	go func() {
-		for i := 0; i<2; i++ {
+		for i := 0; i < 2; i++ {
 			conn, err := In.Accept()
 			if err != nil {
 				return
@@ -96,10 +96,10 @@ func TestStreamClient_ReconnectsAfterEADrops(t *testing.T) {
 	c := NewStreamClient(In.Addr().String(), rec, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	c.minBackoff = 10 * time.Millisecond
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3 * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- c.Run(ctx)}()
+	go func() { done <- c.Run(ctx) }()
 
 	for i := 0; i < 2; i++ {
 		select {
@@ -114,4 +114,3 @@ func TestStreamClient_ReconnectsAfterEADrops(t *testing.T) {
 	}
 
 }
-
