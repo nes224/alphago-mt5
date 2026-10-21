@@ -231,7 +231,7 @@ func (c *CommandClient) RatesPage(ctx context.Context, symbol string, tf domain.
 		page.NextFrom = serverTime(resp.NextFrom)
 	}
 
-	dur := tf.Minutes()
+	dur := tf.Duration()
 	page.Candles = make([]domain.Candle, 0, len(resp.Rates))
 	for _, r := range resp.Rates {
 		open := serverTime(int64(r[0]))
@@ -244,7 +244,7 @@ func (c *CommandClient) RatesPage(ctx context.Context, symbol string, tf domain.
 			Low:       r[3],
 			Close:     r[4],
 			TickCount: int(r[5]),
-			Closed:    !open.Add(time.Duration(dur)).After(server),
+			Closed:    !open.Add(dur).After(server),
 		})
 	}
 

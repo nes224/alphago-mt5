@@ -1,8 +1,6 @@
 package services
 
 import (
-	"time"
-
 	"github.com/nes224/alphago-mt5/internal/core/domain"
 )
 
@@ -26,7 +24,7 @@ type CandleUpdate struct {
 
 // OnTick ป้อน tick เข้าไป แล้วคืนแท่งที่ปิด + แท่งปัจจุบัน
 func (a *CandleAggregator) OnTick(t domain.Tick) CandleUpdate {
-	openTime := t.Time.Truncate(time.Duration(a.tf.Minutes()))
+	openTime := t.Time.Truncate(a.tf.Duration())
 	price := t.Bid
 
 	cur, ok := a.current[t.Symbol]

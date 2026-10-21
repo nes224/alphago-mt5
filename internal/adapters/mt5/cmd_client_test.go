@@ -93,7 +93,7 @@ func ratesJSON(serevrTime int64, hasMore bool, nextFrom int64, bars ...int64) st
 	for i, ts := range bars {
 		rows[i] = fmt.Sprintf("[%d, 4178.279, 4178.757, 4177.466, 4178.036,179]", ts)
 	}
-	return fmt.Sprintf(`{"status": "SUCCESS", "symbol": "XAUUSDm", "tf":1, "server_time":%d, "count":%d, "has_more":%v, "next_from": %d, "rates":[%s]`,
+	return fmt.Sprintf(`{"status": "SUCCESS", "symbol": "XAUUSDm", "tf":1, "server_time":%d, "count":%d, "has_more":%v, "next_from": %d, "rates":[%s]}`,
 		serevrTime, len(bars), hasMore, nextFrom, strings.Join(rows, ","))
 }
 

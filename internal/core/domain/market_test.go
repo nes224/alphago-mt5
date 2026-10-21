@@ -16,7 +16,7 @@ func TestTimeframeDuration(t *testing.T) {
 		TimeframeDaily: 24 * time.Hour,
 		"W1":           0,
 	} {
-		if got := tf.Minutes(); got != int(want) {
+		if got := tf.Duration(); got != want {
 			t.Errorf("%s.Duration() = %v, want %v", tf, got, want)
 		}
 	}
