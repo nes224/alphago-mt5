@@ -89,7 +89,7 @@ func run(symbol string, tf domain.Timeframe, back time.Duration) error {
 	fmt.Println()
 	fmt.Println("open time open high low close ticks closed")
 	show := func(c domain.Candle) {
-		fmt.Printf("%s %s-11.3f %-11.3f %-11.3f %11.3f %-6d %v\n", c.OpenTime.Format(layout), c.Open, c.High, c.Low, c.Close, c.TickCount, c.Closed)
+		fmt.Printf("%s %-11.3f %-11.3f %-11.3f %11.3f %-6d %v\n", c.OpenTime.Format(layout), c.Open, c.High, c.Low, c.Close, c.TickCount, c.Closed)
 	}
 	if len(candles) <= 6 {
 		for _, c := range candles {
