@@ -42,4 +42,10 @@ func TestReadFile(t *testing.T) {
 	}
 }
 
+func TestReadFile_MissingFileIsEmpty(t *testing.T) {
+	got, err := ReadFile(filepath.Join(t.TempDir(), "nil.csv"), "XAUUSDm", domain.TimeframeM1)
+	if err != nil || got != nil {
+		t.Fatalf("got %v, %v; want nil, nil", got, err)
+	}
+}
 
