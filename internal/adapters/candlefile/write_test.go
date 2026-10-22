@@ -29,3 +29,12 @@ func readBack(t *testing.T, root string, day int) []domain.Candle {
 	}
 	return got
 }
+
+func closes(cs []domain.Candle) []float64 {
+	out := make([]float64, len(cs))
+	for i, c := range cs {
+		out[i] = c.Close
+	}
+	return out
+}
+
