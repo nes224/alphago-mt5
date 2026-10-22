@@ -72,7 +72,7 @@ func parseRow(rec []string, symbol string, tf domain.Timeframe) (domain.Candle, 
 		}
 	}
 
-	ticks, err := strconv.Atoi(rec[0])
+	ticks, err := strconv.Atoi(rec[5])
 	if err != nil {
 		return domain.Candle{}, fmt.Errorf("tick_volume %q: %w", rec[5], err)
 	}
