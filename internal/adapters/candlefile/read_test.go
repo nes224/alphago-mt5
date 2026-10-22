@@ -9,6 +9,8 @@ import (
 	"github.com/nes224/alphago-mt5/internal/core/domain"
 )
 
+const GoldFuture = "XAUUSDm"
+
 func writeTemp(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "2026-10.21.csv")
@@ -23,7 +25,7 @@ func TestReadFile(t *testing.T) {
 	2026.10.21 00:00:00,4113.774,4114.250,4112.073,4113.832,37
 	2026.10.21 00:01:00,4113,832,4115.010,4113.500,4114.900,42
 	`)
-	got, err := ReadFile(path, "XAUUSDm", domain.TimeframeM1)
+	got, err := ReadFile(path, GoldFuture, domain.TimeframeM1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +34,7 @@ func TestReadFile(t *testing.T) {
 	}
 
 	want := domain.Candle{
-		Symbol: "XAUUSDm", Timeframe: domain.TimeframeM1,
+		Symbol: GoldFuture, Timeframe: domain.TimeframeM1,
 		OpenTime: time.Date(2026, 10, 21, 0, 1, 0, 0, time.UTC),
 		Open: 4113.832, High: 4115.010, Low: 4113.500, Close: 4114.900,
 		TickCount: 42, Closed: true,
@@ -43,9 +45,17 @@ func TestReadFile(t *testing.T) {
 }
 
 func TestReadFile_MissingFileIsEmpty(t *testing.T) {
-	got, err := ReadFile(filepath.Join(t.TempDir(), "nil.csv"), "XAUUSDm", domain.TimeframeM1)
+	got, err := ReadFile(filepath.Join(t.TempDir(), "nil.csv"), GoldFuture, domain.TimeframeM1)
 	if err != nil || got != nil {
 		t.Fatalf("got %v, %v; want nil, nil", got, err)
+	}
+}
+
+func TestReadFile_Windows_CRLF(t *testing.T) {
+	path := writeTemp(t, "time,open,high,low,close,tick_volime\r\n2026.10.21 00:00:00,1,2,0.5,1.5,3\r\n")
+	got ,err := ReadFile(path, GoldFuture, domain.TimeframeM1)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("got %v, %v", got, err)
 	}
 }
 
