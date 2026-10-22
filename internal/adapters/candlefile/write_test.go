@@ -38,3 +38,15 @@ func closes(cs []domain.Candle) []float64 {
 	return out
 }
 
+func equalFloats(a, b []float64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+
+	return true
+}
