@@ -1,6 +1,7 @@
 package candlefile
 
 import (
+	"testing"
 	"time"
 
 	"github.com/nes224/alphago-mt5/internal/core/domain"
@@ -17,4 +18,14 @@ func bar(day, hh, mm int, price float64) domain.Candle {
 		TickCount: 10,
 		Closed:    true,
 	}
+}
+
+func readBack(t *testing.T, root string, day int) []domain.Candle {
+	t.Helper()
+	path, _ := FilePath(root, testSymbol, domain.TimeframeM1, time.Date(2026, 10, day, 0, 0, 0, 0, time.UTC))
+	got, err := ReadFile(path, testSymbol, domain.TimeframeM1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
 }
