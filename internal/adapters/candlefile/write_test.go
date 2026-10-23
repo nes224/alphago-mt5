@@ -1,6 +1,8 @@
 package candlefile
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -49,4 +51,31 @@ func equalFloats(a, b []float64) bool {
 	}
 
 	return true
+}
+
+func TestWriteCandles_CreateFileAndRoundTrips(t *testing.T) {
+	root := t.TempDir()
+	in := []domain.Candle{bar(21, 0, 0, 4113.832), bar(21, 0, 1, 4114.9)}
+
+	if err := WriteCandles(root, testSymbol, domain.TimeframeM1, in); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(root, "xauusdm", "tf_m_1", "2026-10-21.csv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "time,open,high,low,close,tick_volume\n" +
+		"2026.10.21 00:00:00,4112.832,4114.832,4111.832,4113.832,10\n" +
+		"2026.10.21 00:01:00,4113.9,4115.9,4112.9,4114.9,10\n"
+	if string(raw) != want {
+		t.Errorf("file content:\n%s\nwant:\n%s", raw, want)
+	}
+
+	got := readBack(t, root, 21)
+	if len(got) != 2 || got[0] != in[0] || got[1] != in[1] {
+		t.Errorf("round troup:\ngot %+v\nwant %+v", got ,in)
+	}
+	
+
 }
