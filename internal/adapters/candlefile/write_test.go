@@ -96,3 +96,24 @@ func TestWriteCandles_MergeNewOverwritesSameTime(t *testing.T) {
 		t.Errorf("closes = %v, want %v", got, want)
 	}
 }
+
+func TestWriteCandles_NewDayNewFileOldFileKept(t *testing.T) {
+	root := t.TempDir()
+	day21 := []domain.Candle{bar(21, 23, 57, 1), bar(21, 23, 58, 2)}
+	if err := WriteCandles(root, testSymbol, domain.TimeframeM1, day21); err != nil {
+		t.Fatal(err)
+	}
+
+	// รอบถัดไปมีแท่งคร่อมเที่ยงคืน
+	cross := []domain.Candle{bar(21, 23, 59, 3), bar(22, 0, 0, 4), bar(22, 0, 1, 5)}
+	if err := WriteCandles(root, testSymbol, domain.TimeframeM1, cross); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := closes(readBack(t, root, 21)); !equalFloats(got, []float64{1, 2, 3}) {
+		t.Errorf("day 21 = %v, want [1 2 3] (old rows must be kept)", got)
+	}
+	if got := closes(readBack(t, root, 22)); !equalFloats(got, []float64{4, 5}) {
+		t.Errorf("day 22 = %v, want [4 5]", got)
+	}
+}
