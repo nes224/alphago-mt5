@@ -74,8 +74,25 @@ func TestWriteCandles_CreateFileAndRoundTrips(t *testing.T) {
 
 	got := readBack(t, root, 21)
 	if len(got) != 2 || got[0] != in[0] || got[1] != in[1] {
-		t.Errorf("round troup:\ngot %+v\nwant %+v", got ,in)
+		t.Errorf("round troup:\ngot %+v\nwant %+v", got, in)
 	}
-	
 
+}
+
+func TestWriteCandles_MergeNewOverwritesSameTime(t *testing.T) {
+	root := t.TempDir()
+	first := []domain.Candle{bar(21, 0, 0, 100), bar(21, 0, 1, 101), bar(21, 0, 2, 102)}
+	if err := WriteCandles(root, testSymbol, domain.TimeframeM1, first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := []domain.Candle{bar(21, 0, 3, 103), bar(21, 0, 2, 202)}
+	if err := WriteCandles(root, testSymbol, domain.TimeframeM1, second); err != nil {
+		t.Fatal(err)
+	}
+
+	got := closes(readBack(t, root, 21))
+	if want := []float64{100, 101, 202, 103}; !equalFloats(got, want) {
+		t.Errorf("closes = %v, want %v", got, want)
+	}
 }
