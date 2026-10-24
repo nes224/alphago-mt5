@@ -152,3 +152,21 @@ func TestWriteCandles_NoTempFilesLeft(t *testing.T) {
 	}
 }
 
+func TestWriteCandles_RefusesToOverwriteCorruptFile(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "xauusdm", "tf_m_1")
+	os.MkdirAll(dir, 0o755)
+	path := filepath.Join(dir, "2026-10-21.csv")
+	currupt := "this not our csv\n"
+	os.WriteFile(path, []byte(currupt), 0o644)
+
+	err := WriteCandles(root, testSymbol, domain.TimeframeM1, []domain.Candle{bar(21, 0, 0, 1)})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	raw, _ := os.ReadFile(path)
+	if string(raw) != currupt {
+		t.Errorf("corrupt file was modified: %q", raw)
+	}
+}
