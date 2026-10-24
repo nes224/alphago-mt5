@@ -2,8 +2,8 @@ package candlefile
 
 import (
 	"errors"
-	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -18,9 +18,31 @@ func LatestCandle(root, symbol string, tf domain.Timeframe) (c domain.Candle, ok
 	if err != nil {
 		return domain.Candle{}, false, err
 	}
-	fmt.Println(dir)
 
+	files, err := periodFiles(dir, tf)
+	if err != nil {
+		return domain.Candle{}, false, err
+	}
+
+	for i := len(files) - 1; i >= 0; i-- {
+		candles, err := ReadFile(filepath.Join(dir, files[i]), symbol, tf)
+		if err != nil {
+			return domain.Candle{}, false, err
+		}
+		if len(candles) == 0 {
+			continue
+		}
+
+		latest := candles[0]
+		for _, c := range candles[1:] {
+			if c.OpenTime.After(latest.OpenTime) {
+				latest = c
+			}
+		}
+		return latest, true, nil
+	}
 	return domain.Candle{}, false, nil
+
 }
 
 // periodFiles lists the candle files in dir, oldest first.
