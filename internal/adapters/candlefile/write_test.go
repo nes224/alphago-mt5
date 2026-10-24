@@ -174,7 +174,7 @@ func TestWriteCandles_RefusesToOverwriteCorruptFile(t *testing.T) {
 func TestWriteCandles_RejectsWrongTimeframe(t *testing.T) {
 	c := bar(21, 0, 0, 1)
 	c.Timeframe = domain.TimeframeH1
-	if err := WriteCandles(t.TempDir(), testSymbol, domain.TimeframeM1, [] domain.Candle{c}); err == nil {
+	if err := WriteCandles(t.TempDir(), testSymbol, domain.TimeframeM1, []domain.Candle{c}); err == nil {
 		t.Fatal("expected error")
 	}
 }
