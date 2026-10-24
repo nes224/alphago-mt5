@@ -3,6 +3,7 @@ package candlefile
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -128,6 +129,26 @@ func TestWriteCandles_SkipsCandlesStillForming(t *testing.T) {
 	}
 	if got := closes(readBack(t, root, 21)); !equalFloats(got, []float64{1}) {
 		t.Errorf("closes = %v , want [1]", got)
+	}
+}
+
+func TestWriteCandles_NoTempFilesLeft(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i<3; i++ {
+		if err := WriteCandles(root, testSymbol, domain.TimeframeM1, []domain.Candle{bar(21, 0, i, float64(i))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	entries, _ := os.ReadDir(filepath.Join(root, "xauusdm", "tf_m_1"))
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("leftover temp file: %s", e.Name())
+		}
+	}
+
+	if len(entries) != 1 {
+		t.Errorf("files = %d, want 1", len(entries))
 	}
 }
 
