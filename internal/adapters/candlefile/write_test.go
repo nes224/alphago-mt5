@@ -117,3 +117,17 @@ func TestWriteCandles_NewDayNewFileOldFileKept(t *testing.T) {
 		t.Errorf("day 22 = %v, want [4 5]", got)
 	}
 }
+
+func TestWriteCandles_SkipsCandlesStillForming(t *testing.T) {
+	root := t.TempDir()
+	forming := bar(21, 0, 1, 999)
+	forming.Closed = false
+
+	if err := WriteCandles(root, testSymbol, domain.TimeframeM1, []domain.Candle{bar(21, 0, 0, 1), forming}); err != nil {
+		t.Fatal(err)
+	}
+	if got := closes(readBack(t, root, 21)); !equalFloats(got, []float64{1}) {
+		t.Errorf("closes = %v , want [1]", got)
+	}
+}
+
