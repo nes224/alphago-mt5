@@ -35,14 +35,21 @@ func Dir(root, symbol string, tf domain.Timeframe) (string, error) {
 	return filepath.Join(root, strings.ToLower(symbol), tfDir), nil
 }
 
+// fileName returns the file name for a candle, based on the timeframe size
 func fileName(tf domain.Timeframe, openTime time.Time) string {
-	t := openTime.UTC()
+	return openTime.UTC().Format(periodLayout(tf)) + ".csv"
+
+}
+
+// periodLayout returns the time layout used in file names:
+// one file per day for M1–M30, per month for H1–H4, per year for D1
+func periodLayout(tf domain.Timeframe) string {
 	switch {
 	case tf.Minutes() <= 30:
-		return t.Format("2006-01-02") + ".csv"
+		return "2006-01-02"
 	case tf.Minutes() < 1440:
-		return t.Format("2006-01") + ".csv"
+		return "2006-01"
 	default:
-		return t.Format("2006") + ".csv"
+		return "2006"
 	}
 }
