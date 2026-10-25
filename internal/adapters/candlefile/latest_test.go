@@ -52,3 +52,20 @@ func TestLatestCandle_SkipsEmptyNewestFile(t *testing.T) {
 	}
 }
 
+func TestLatestCandle_IgnoresForeignFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := WriteCandles(root, testSymbol, domain.TimeframeM1, []domain.Candle{bar(21, 12, 0, 7)}); err != nil {
+		t.Fatal(err)
+	}
+	dir, _ := Dir(root, testSymbol, domain.TimeframeM1)
+	for _, name := range []string{"2026-10-22.csv.123.tmp", "notes.csv", ".DS_Store", "zzz.csv"} {
+		os.WriteFile(filepath.Join(dir, name), []byte("garbage"), 0o644)
+	}
+	os.Mkdir(filepath.Join(dir, "2026-10-23.csv"), 0o755) // a directory with a valid-looking name
+	got, ok, err := LatestCandle(root, testSymbol, domain.TimeframeM1)
+	if err != nil || !ok || got.Close != 7 {
+		t.Fatalf("got close=%v ok=%v err=%v, want close=7", got.Close, ok, err)
+	}
+}
+
+
