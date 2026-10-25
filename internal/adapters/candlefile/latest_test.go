@@ -68,4 +68,22 @@ func TestLatestCandle_IgnoresForeignFiles(t *testing.T) {
 	}
 }
 
+// H4 uses monthly files: the newest candle must come from the newest month
+func TestLatestCandle_MonthlyFiles(t *testing.T) {
+	root := t.TempDir()
+	h4 := func(month, day, hh int, price float64) domain.Candle {
+		c := bar(day, hh, 0, price)
+		c.Timeframe = domain.TimeframeH4
+		c.OpenTime = time.Date(2026, time.Month(month), day, hh, 0, 0, 0, time.UTC)
+		return c
+	}
+	in := []domain.Candle{h4(9, 30, 20, 1), h4(10, 1, 0, 2), h4(10, 1, 4, 3)}
+	if err := WriteCandles(root, testSymbol, domain.TimeframeH4, in); err != nil {
+		t.Fatal(err)
+	}
 
+	got, ok, err := LatestCandle(root, testSymbol, domain.TimeframeH4)
+	if err != nil || !ok || got.Close != 3 {
+		t.Fatalf("got close=%v ok=%v err=%v, want close=3", got.Close, ok, err)
+	}
+}
