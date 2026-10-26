@@ -42,3 +42,15 @@ func TestBackfillFrom(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultLookback_CoversEveryTimeframe(t *testing.T) {
+	all := []domain.Timeframe{
+		domain.TimeframeM1, domain.TimeframeM5, domain.TimeframeM15, domain.TimeframeM30,
+		domain.TimeframeH1, domain.TimeframeH4, domain.TimeframeDaily,
+	}
+	for _, tf := range all {
+		if DefaultLookback[tf] <= 0 {
+			t.Errorf("%s: lookback %v, want > 0", tf, DefaultLookback[tf])
+		}
+	}
+}
