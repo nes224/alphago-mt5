@@ -24,7 +24,7 @@ import (
 
 func main() {
 	symbol := flag.String("symbol", "", "symbol as the in mt5 for example XAUUSDm (maybe?)")
-	tf := flag.String("tf", "M1", "timeframe: M1 M5 M15 M30 H1m H4 Daily")
+	tf := flag.String("tf", "M1", "timeframe: M1 M5 M15 M30 H1 H4 Daily")
 	back := flag.Duration("back", 24*time.Hour, "look back for time duration server in the present to know how much for example 3h, 24h, 720h")
 	flag.Parse()
 

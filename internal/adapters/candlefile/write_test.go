@@ -134,7 +134,7 @@ func TestWriteCandles_SkipsCandlesStillForming(t *testing.T) {
 
 func TestWriteCandles_NoTempFilesLeft(t *testing.T) {
 	root := t.TempDir()
-	for i := 0; i<3; i++ {
+	for i := 0; i < 3; i++ {
 		if err := WriteCandles(root, testSymbol, domain.TimeframeM1, []domain.Candle{bar(21, 0, i, float64(i))}); err != nil {
 			t.Fatal(err)
 		}
@@ -176,5 +176,17 @@ func TestWriteCandles_RejectsWrongTimeframe(t *testing.T) {
 	c.Timeframe = domain.TimeframeH1
 	if err := WriteCandles(t.TempDir(), testSymbol, domain.TimeframeM1, []domain.Candle{c}); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestWriteCandles_RejectsWrongSymbol(t *testing.T) {
+	root := t.TempDir()
+	c := bar(21, 0, 0, 1)
+	c.Symbol = "BTCUSDm"
+	if err := WriteCandles(root, testSymbol, domain.TimeframeM1, []domain.Candle{c}); err == nil {
+		t.Fatal("expected error")
+	}
+	if got := readBack(t, root, 21); len(got) != 0 {
+		t.Errorf("wrote %d candles for wrong symbol", len(got))
 	}
 }

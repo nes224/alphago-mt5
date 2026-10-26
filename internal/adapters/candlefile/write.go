@@ -23,6 +23,9 @@ func WriteCandles(root, symbol string, tf domain.Timeframe, candles []domain.Can
 		if !c.Closed {
 			continue
 		}
+		if c.Symbol != symbol {
+			return fmt.Errorf("candlefile: candle %v has symbol %s, want %s", c.OpenTime, c.Symbol, symbol)
+		}
 		if c.Timeframe != tf {
 			return fmt.Errorf("candlefile: candle %v has timeframe %s, want %s", c.OpenTime, c.Timeframe, tf)
 		}
@@ -127,5 +130,5 @@ func writeAtomic(path string, candles []domain.Candle) (err error) {
 }
 
 func formatPrice(v float64) string {
-	return strconv.FormatFloat(v, 'f', -1,  64)
+	return strconv.FormatFloat(v, 'f', -1, 64)
 }

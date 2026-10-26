@@ -50,7 +50,7 @@ func ReadFile(path, symbol string, tf domain.Timeframe) ([]domain.Candle, error)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
-		c, err := parseRow(rec,symbol, tf)
+		c, err := parseRow(rec, symbol, tf)
 		if err != nil {
 			line, _ := r.FieldPos(0)
 			return nil, fmt.Errorf("%s line %d: %w", path, line, err)

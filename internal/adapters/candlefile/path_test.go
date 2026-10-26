@@ -65,5 +65,3 @@ func TestFilePath_RejectsBadInput(t *testing.T) {
 		t.Error("tf W1: expected error")
 	}
 }
-
-

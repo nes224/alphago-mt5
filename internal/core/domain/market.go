@@ -46,7 +46,7 @@ const (
 	TimeframeDaily Timeframe = "Daily"
 )
 
-// Duration คืนความยาวของ TF
+// Minutes คืนความยาวของ TF เป็นนาที
 func (tf Timeframe) Minutes() int {
 	switch tf {
 	case TimeframeM1:
