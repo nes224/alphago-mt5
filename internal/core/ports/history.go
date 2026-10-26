@@ -15,5 +15,5 @@ type HistoryProvider interface {
 	Rates(ctx context.Context, symbol string, tf domain.Timeframe, from, to time.Time) ([]domain.Candle, error)
 
 	// ServerTime returns the broker's current server time.
-
+	ServerTime(ctx context.Context, symbol string) (time.Time, error)
 }
