@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"time"
 
+	"github.com/nes224/alphago-mt5/internal/adapters/candlefile"
 	"github.com/nes224/alphago-mt5/internal/adapters/config"
 	"github.com/nes224/alphago-mt5/internal/adapters/mt5"
 	"github.com/nes224/alphago-mt5/internal/core/domain"
@@ -26,6 +27,8 @@ func main() {
 	symbol := flag.String("symbol", "", "symbol as the in mt5 for example XAUUSDm (maybe?)")
 	tf := flag.String("tf", "M1", "timeframe: M1 M5 M15 M30 H1 H4 Daily")
 	back := flag.Duration("back", 24*time.Hour, "look back for time duration server in the present to know how much for example 3h, 24h, 720h")
+	save := flag.Bool("save", false, "write closed candles to CSV files under -data")
+	dataDir := flag.String("data", "data/candle", "root directory for candle CSV files")
 	flag.Parse()
 
 	if *symbol == "" {
@@ -33,13 +36,13 @@ func main() {
 		os.Exit(2)
 	}
 
-	if err := run(*symbol, domain.Timeframe(*tf), *back); err != nil {
+	if err := run(*symbol, domain.Timeframe(*tf), *back, *save, *dataDir); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 }
 
-func run(symbol string, tf domain.Timeframe, back time.Duration) error {
+func run(symbol string, tf domain.Timeframe, back time.Duration, save bool, dataDir string) error {
 	if tf.Minutes() == 0 {
 		return fmt.Errorf("Unknown timeframe %q (use M1 M5 M15 M30 H1 H4 Daily)", tf)
 	}
@@ -81,6 +84,23 @@ func run(symbol string, tf domain.Timeframe, back time.Duration) error {
 	fmt.Printf("server time %s (Thai %s)\n", now.Format("2006-01-02 15:04:05"), now.Add(7*time.Hour).Format("15:04:05"))
 	fmt.Printf("range %s - > %s\n", from.Format(layout), now.Format(layout))
 	fmt.Printf("candles %d (closed %d, doing %d) in %v\n", len(candles), closed, len(candles)-closed, time.Since(start).Round(time.Millisecond))
+
+	if save {
+		if err := candlefile.WriteCandles(dataDir, symbol, tf, candles); err != nil {
+			return fmt.Errorf("save: %w", err)
+		}
+		dir, _ := candlefile.Dir(dataDir, symbol, tf)
+		latest, ok, err := candlefile.LatestCandle(dataDir, symbol, tf)
+		if err != nil {
+			return fmt.Errorf("save: %w", err)
+		}
+		if ok {
+			fmt.Printf("saved %d closed candles to %s (latest stored: %s)\n", closed, dir, latest.OpenTime.Format(layout))
+		} else {
+			fmt.Printf("saved nothing to %s (no closed candles)\n", dir)
+		}
+	}
+
 	if len(candles) == 0 {
 		fmt.Println("(There is no candle stick in time period - market closed?)")
 		return nil
@@ -89,7 +109,7 @@ func run(symbol string, tf domain.Timeframe, back time.Duration) error {
 	fmt.Println()
 	fmt.Println("open time open high low close ticks closed")
 	show := func(c domain.Candle) {
-		fmt.Printf("%s %-11.3f %-11.3f %-11.3f %11.3f %-6d %v\n", c.OpenTime.Format(layout), c.Open, c.High, c.Low, c.Close, c.TickCount, c.Closed)
+		fmt.Printf("%s %-11.3f %-11.3f %-11.3f %-11.3f %-6d %v\n", c.OpenTime.Format(layout), c.Open, c.High, c.Low, c.Close, c.TickCount, c.Closed)
 	}
 	if len(candles) <= 6 {
 		for _, c := range candles {

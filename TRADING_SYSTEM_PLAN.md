@@ -10,19 +10,28 @@
 - แผนงาน/มติ/ความคืบหน้าทุกอย่างบันทึกไว้ในไฟล์นี้
 - **คำสั่งสั้นๆ แบบ "เขียนมาเริ่มกัน" ไม่นับเป็นการอนุมัติให้เขียนโค้ด** (2026-10-12 — เคยเข้าใจผิดว่าเป็นการอนุมัติ เขียนไปแล้ว 7 ไฟล์ + แก้ docker-compose.yml ก่อนจะถูกสั่งถอยกลับ) ต้องถามตรงๆ ให้ชัดว่า "เริ่มเขียนโค้ดได้เลยไหม" แล้วรอคำตอบที่ชัดเจนจริงๆ ก่อนแตะไฟล์ไหนเลย
 
-## สถานะปัจจุบัน
+## สถานะปัจจุบัน (อัปเดต 2026-10-26)
 
-- `cmd/app/main.go` — HTTP server ขั้นต่ำ (stdlib `net/http` ล้วน ไม่พึ่ง dependency ภายนอก) มีแค่ `GET /health` → `{"status":"ok"}`
-- โครง Hexagonal ว่างเปล่า (แค่ `package xxx` ไม่มี logic ข้างใน):
-  - `internal/core/domain/`
-  - `internal/core/ports/`
-  - `internal/core/services/`
-  - `internal/adapters/config/`
-  - `internal/adapters/database/`
-  - `internal/adapters/http/v1/`
-  - `internal/adapters/logging/`
-  - `internal/adapters/mt5/`
-- `go.mod` ไม่มี dependency ภายนอกเลย
+- EA ที่ใช้จริง: `alphago_tickexport.mq5` v1.30 (อยู่ในโฟลเดอร์ MT5 ไม่ได้อยู่ใน repo) — `alphago_mt5.mq` ใน repo คือ v1.20 เก็บไว้เฉยๆ ไม่ได้ใช้
+  - protocol ทั้งหมด → `docs/mt5-ea-protocol.md`
+- `cmd/gateway` — Gateway service: ต่อ EA stream, รวม tick เป็น M1, publish ผ่าน `logging.Publisher` (log ออกจอ ยังไม่ใช่ Kafka), `GET /health` บอกสถานะ stream + จำนวน tick
+- `cmd/mt5rates` — เครื่องมือทดสอบ: ดึงแท่งย้อนหลังจาก EA ผ่าน `RATES` แล้วพิมพ์สรุป (ปิด Gateway ก่อนใช้)
+- `internal/core/domain` — Tick, Candle, Timeframe (`Minutes()`/`Duration()`), TradeClosed
+- `internal/core/ports` — MarketEventHandler, MarketPublisher, HistoryProvider
+- `internal/core/services` — CandleAggregator, GatewayService
+- `internal/adapters/mt5` — StreamClient (reconnect + backoff), CommandClient (`Rates` แบ่งหน้า + retry)
+- `internal/adapters/candlefile` — เก็บแท่งเป็น CSV `<root>/<symbol>/tf_m_<นาที>/<ช่วงเวลา>.csv`, merge + atomic write, `LatestCandle`
+- `internal/adapters/config` — `LoadGateway()` จาก env
+- ยังว่าง: `adapters/database`, `adapters/http/v1`
+- `go build` / `go vet` / `go test -race ./...` ผ่านหมด
+- `go.mod` ยังไม่มี dependency ภายนอก
+
+### ค้างอยู่ (เล็กๆ)
+
+- `Makefile` ยังชี้ `MAIN_PATH=./cmd/app/main.go` ซึ่งไม่มีแล้ว → `make build` / `make run` พัง
+- `app.env.example` ยังไม่มี `GATEWAY_HTTP_PORT`, `LOG_LEVEL`
+- `stream_client.go` ยังไม่อ่าน `time_msc` (ใช้ `timestamp` ละเอียดแค่วินาที)
+- commit `d2d5c3f` ชื่อ "Kafka" แต่ยังไม่มี Kafka ใน repo
 
 ## เป้าหมายอ้างอิง — องค์ประกอบของระบบเทรดที่ดี
 
@@ -107,7 +116,11 @@
 
 รายละเอียดตาม "สถานะปัจจุบัน" ด้านบน ยืนยันแล้วว่า `go build`/`go vet` ผ่าน และ `/health` ตอบถูกต้องจริง
 
-### Step 2 — MT5 Gateway service (รอ confirm เริ่มเขียนโค้ด)
+### Step 2 — MT5 Gateway service (กำลังทำ)
+
+ความคืบหน้า → ดู "เสร็จแล้ว" / "ลำดับงานถัดไป" ด้านล่าง · spec ขั้นถัดไป → `docs/specs/step-2c-candle-history.md`
+
+#### ขอบเขตเดิมของ Step 2 (อ้างอิง)
 
 **ขอบเขต**:
 - ต่อ MT5 EA ผ่าน TCP (เหมือนของเดิมที่เคยมี — `alphago_mt5.mq` ยังอยู่ ไม่ต้องแก้ฝั่ง EA ตอนนี้)
@@ -155,11 +168,14 @@
 - [x] Script `AlphaGo_TickExport.mq5` — export tick ย้อนหลังเป็น CSV (เก็บไว้ใช้ backtest)
 - [x] EA v1.30 — คำสั่ง RATES (ทุก TF, ส่งชุดละ 200 แท่ง, has_more/next_from, server_time),
       tick ส่ง time_msc + เวลาของ tick จริง, SendAll() ส่งครบทุก byte — ทดสอบผ่านแล้ว (2026-10-16)
+- [x] Command client (`internal/adapters/mt5/cmd_client.go`) + `cmd/mt5rates` (ผู้ใช้เขียนเอง)
+- [x] ตัวเขียน/อ่านไฟล์แท่งเทียน `internal/adapters/candlefile` + `LatestCandle` (ผู้ใช้เขียนเอง)
+- [x] แก้บั๊ก 2026-10-26: gofmt, help `-tf` (H1m→H1), `WriteCandles` ปฏิเสธแท่งที่ symbol ไม่ตรง (+test)
 
 #### ลำดับงานถัดไป
-1. [ ] Command client ฝั่ง Gateway — ต่อ 5555 ค้างไว้, ทีละคำสั่ง, timeout, reconnect, วนขอ RATES จนครบ, retry ตอน CopyRates failed
-2. [ ] ตัวเขียน/อ่านไฟล์แท่งเทียน (merge + atomic write + เทสต์ข้ามวันไฟล์เก่าไม่หาย)
-3. [ ] ตัวรวมแท่งหลาย TF + ตัวเติม gap
+1. [x] Command client ฝั่ง Gateway — ต่อ 5555 ค้างไว้, ทีละคำสั่ง, timeout, reconnect, วนขอ RATES จนครบ, retry ตอน CopyRates failed
+2. [x] ตัวเขียน/อ่านไฟล์แท่งเทียน (merge + atomic write + เทสต์ข้ามวันไฟล์เก่าไม่หาย)
+3. [ ] ตัวรวมแท่งหลาย TF + ตัวเติม gap ← **ถัดไป** spec: `docs/specs/step-2c-candle-history.md`
 4. [ ] ปรับ stream parser ให้ใช้ time_msc
 5. [ ] Kafka (franz-go) + KRaft ใน docker-compose
 6. [ ] gRPC server stub
@@ -173,7 +189,7 @@
 #### งานค้างฝั่ง MT5 (ผู้ใช้ทำ)
 - จัดชื่อไฟล์ใหม่: โค้ด EA → `Experts/AlphaGo_Listener.mq5`, script → `Scripts/AlphaGo_TickExport.mq5`
   (ตอนนี้ EA v1.30 รันอยู่ในไฟล์ชื่อ alphago_tickexport)
-- อัปเดต `alphago_mt5.mq` ในโปรเจกต์เป็น v1.30
+- ~~อัปเดต `alphago_mt5.mq` ในโปรเจกต์เป็น v1.30~~ — 2026-10-26 ผู้ใช้บอกว่า `alphago_mt5.mq` ไม่ได้ใช้ เก็บไว้เฉยๆ (protocol ของ v1.30 จดไว้ใน `docs/mt5-ea-protocol.md` แทน)
 
 #### เพิ่มเติม (2026-10-17)
 
@@ -203,5 +219,5 @@
 
 **ยังไม่ทำ step นี้**: risk management, strategy/signal, order execution จริง, persistence ของ trade/account — รอ Step 3 (Trading Engine)
 
-_(รอคำยืนยันให้เริ่มเขียนโค้ดจริง — ตามกติกาที่ตั้งไว้)_
+
 
