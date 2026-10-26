@@ -25,3 +25,21 @@ var DefaultLookback = map[domain.Timeframe]time.Duration{
 //
 // ok=false means there is nothing to fetch yet: not even one full candle fits before now,
 // or tf is unknown.
+
+func BackfillFrom(latest domain.Candle, hasLatest bool, now time.Time, tf domain.Timeframe, lookback time.Duration) (from time.Time, ok bool) {
+	dur := tf.Duration()
+	if dur == 0 {
+		return time.Time{}, false
+	}
+
+	if hasLatest {
+		from = latest.OpenTime
+	} else {
+		from = now.Add(-lookback)
+	}
+
+	if from.Add(dur).After(now) {
+		return time.Time{}, false
+	}
+	return from, true
+}
