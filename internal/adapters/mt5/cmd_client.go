@@ -272,3 +272,13 @@ func (c *CommandClient) ratesPageWithRetry(ctx context.Context, symbol string, t
 
 // serverTime แปลงวินาที unix ของ "เวลา server" เป็น time.Time ที่ location = UTC
 func serverTime(sec int64) time.Time { return time.Unix(sec, 0).UTC() }
+
+// ServerTime returns the broker's current server time, taken from a one-candle RATES request
+// (implements ports.HistoryProvider).
+func (c *CommandClient) ServerTime(ctx context.Context, symbol string) (time.Time, error) {
+	page, err := c.RatesPage(ctx, symbol, domain.TimeframeM1, time.Time{}, time.Time{}, 1)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return page.ServerTime, nil
+}
