@@ -310,3 +310,23 @@ func TestCall_ContextCancelUnblocks(t *testing.T) {
 		t.Errorf("cancel took %v", time.Since(start))
 	}
 }
+
+func TestServerTime(t *testing.T) {
+	var got map[string]any
+	ea := newFakeEA(t, func(_ int, req map[string]any) string {
+		got = req
+		return ratesJSON(t0+150, false, 0, t0+120)
+	})
+	c := newTestClient(ea.addr(), time.Second)
+
+	st, err := c.ServerTime(context.Background(), "XAUUSDm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Unix(t0+150, 0).UTC(); !st.Equal(want) {
+		t.Errorf("server time = %v , want %v", st, want)
+	}
+	if got["count"] != float64(1) || got["symbol"] != "XAUUSDm" {
+		
+	}
+}
