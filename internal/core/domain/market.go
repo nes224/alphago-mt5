@@ -2,6 +2,11 @@ package domain
 
 import "time"
 
+var AllTimeframes = []Timeframe{
+	TimeframeM1, TimeframeM5, TimeframeM15, TimeframeM30,
+	TimeframeH1, TimeframeH4, TimeframeDaily,
+}
+
 // Tick ราคาหนึ่งจังหวะจาก MT5
 type Tick struct {
 	Symbol string

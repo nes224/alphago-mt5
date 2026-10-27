@@ -9,7 +9,7 @@ type Store struct {
 	Root string
 }
 
-var _ ports.CandlePort = Store{}
+var _ ports.CandleStore = Store{}
 
 func (s Store) LatestCandle(symbol string, tf domain.Timeframe) (domain.Candle, bool, error) {
 	return LatestCandle(s.Root, symbol, tf)
