@@ -40,3 +40,15 @@ func NewBackfiller(h ports.HistoryProvider, s ports.CandleStore, lookback map[do
 	}
 	return &Backfiller{history: h, store: s, lookback: lookback, log: log.With("component", "backfiller")}
 }
+
+func (r Report) OK() bool {
+	if r.Err != "" {
+		return false
+	}
+	for _, res := range r.Results {
+		if res.Err != "" {
+			return false
+		}
+	}
+	return true
+}
