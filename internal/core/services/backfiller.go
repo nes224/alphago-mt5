@@ -1,6 +1,8 @@
 package services
 
 import (
+	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -51,4 +53,83 @@ func (r Report) OK() bool {
 		}
 	}
 	return true
+}
+
+func (b *Backfiller) fill(ctx context.Context, symbol string, tf domain.Timeframe, now time.Time) (res TFResult, historyErr error) {
+	res.Timeframe = tf
+	log := b.log.With("symbol", symbol, "tf", tf)
+
+	latest, hasLatest, err := b.store.LatestCandle(symbol, tf)
+	if err != nil {
+		res.Err = fmt.Sprintf("read store: %v", err)
+		log.Warn("backfill skipped timeframe", "err", err)
+		return res, nil
+	}
+
+	if hasLatest {
+		t := latest.OpenTime
+		res.Latest = &t
+	}
+
+	from, need := BackfillFrom(latest, hasLatest, now, tf, b.lookback[tf])
+	if !need {
+		res.Skipped = true
+		return res, nil
+	}
+
+	candles, err := b.history.Rates(ctx, symbol, tf, from, now)
+	if err != nil {
+		res.Err = fmt.Sprintf("rates: %v", err)
+		log.Warn("backfill stopped", "from", from, "err", err)
+		return res, err
+	}
+
+	if err := b.store.WriteCandles(symbol, tf, candles); err != nil {
+		res.Err = fmt.Sprintf("write store: %v", err)
+		log.Warn("backfill skipped timeframe", "err", err)
+		return res, nil
+	}
+
+	for _, c := range candles {
+		if !c.Closed {
+			continue
+		}
+		res.Written++
+		if res.Latest == nil || c.OpenTime.After(*res.Latest) {
+			res.Latest = &c.OpenTime
+
+		}
+	}
+
+	return res, nil
+}
+
+func (b *Backfiller) run(ctx context.Context, symbol string, tfs []domain.Timeframe) Report {
+	rep := Report{Symbol: symbol, StartedAt: time.Now()}
+
+	now, err := b.history.ServerTime(ctx, symbol)
+	if err != nil {
+		rep.Err = fmt.Sprintf("server time: %v", err)
+		b.log.Warn("backfill aborted", "symbol", symbol, "err", err)
+		rep.FinishedAt = time.Now()
+		return rep
+	}
+	rep.ServerTime = now
+
+	for i, tf := range tfs {
+		res, historyErr := b.fill(ctx, symbol, tf, now)
+		rep.Results = append(rep.Results, res)
+		if historyErr != nil {
+			for _, rest := range tfs[i+1:] {
+				rep.Results = append(rep.Results, TFResult{Timeframe: rest, Err: fmt.Sprintf("not attempted: %v", historyErr)})
+			}
+			break
+		}
+	}
+	rep.FinishedAt = time.Now()
+	return rep
+}
+
+func (b *Backfiller) Run(ctx context.Context, symbol string) Report {
+	return b.run(ctx, symbol, domain.AllTimeframes)
 }
