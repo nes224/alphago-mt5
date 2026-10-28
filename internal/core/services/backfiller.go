@@ -133,3 +133,8 @@ func (b *Backfiller) run(ctx context.Context, symbol string, tfs []domain.Timefr
 func (b *Backfiller) Run(ctx context.Context, symbol string) Report {
 	return b.run(ctx, symbol, domain.AllTimeframes)
 }
+
+func (b *Backfiller) RunTF(ctx context.Context, symbol string, tf domain.Timeframe) Report {
+	return b.run(ctx, symbol, []domain.Timeframe{tf})
+}
+

@@ -119,3 +119,27 @@ func TestBackfiller_FirstRunFillsEveryTimeframe(t *testing.T) {
 	}
 
 }
+
+func TestBackfiller_SecondRunResumesFromLatest(t *testing.T) {
+	h := &fakeHistory{now: testNow}
+	s := newFakeStore()
+	b := NewBackfiller(h, s, map[domain.Timeframe]time.Duration{domain.TimeframeM1: time.Hour}, quite())
+
+	first := b.RunTF(context.Background(), "XAUUSDm", domain.TimeframeM1)
+	latest := *first.Results[0].Latest
+
+	h.now = testNow.Add(10 * time.Minute)
+	h.requests = nil
+	second := b.RunTF(context.Background(), "XAUUSDm", domain.TimeframeM1)
+
+	if !h.requests[0].from.Equal(latest) {
+		t.Errorf("second run from %v, want latest stored %v", h.requests[0].from, latest)
+	}
+	if got := second.Results[0].Written; got != 11 {
+		t.Errorf("written = %d, want 11", got)
+	}
+	if want := first.Results[0].Written + 10; len(s.data[domain.TimeframeM1]) != want {
+		t.Errorf("stored = %d, want %d (no duplicates)", len(s.data[domain.TimeframeM1]), want)
+	}
+
+}
