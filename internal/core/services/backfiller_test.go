@@ -69,3 +69,16 @@ func (s *fakeStore) LatestCandle(_ string, tf domain.Timeframe) (domain.Candle, 
 
 	return latest, ok, nil
 }
+
+func (s *fakeStore) WriteCandles(_ string, tf domain.Timeframe, candles []domain.Candle) error {
+	if s.data[tf] == nil {
+		s.data[tf] = map[int64]domain.Candle{}
+	}
+	for _, c := range candles {
+		if c.Closed {
+			s.data[tf][c.OpenTime.Unix()] = c
+		}
+	}
+
+	return nil
+}
