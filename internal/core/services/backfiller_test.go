@@ -19,6 +19,11 @@ type fakeHistory struct {
 	requests []rateCall
 }
 
+type fakeStore struct {
+	data map[domain.Timeframe]map[int64]domain.Candle
+	failOn map[domain.Timeframe]error
+}
+
 func (f *fakeHistory) ServerTime(context.Context, string) (time.Time, error) {
 	return f.now, f.timeErr
 }
@@ -43,4 +48,24 @@ func (f *fakeHistory) Rates(_ context.Context, symbol string, tf domain.Timefram
 	}
 
 	return out, nil
+}
+
+func newFakeStore() *fakeStore {
+	return &fakeStore{data: map[domain.Timeframe]map[int64]domain.Candle{}, failOn: map[domain.Timeframe]error{}}
+}
+
+func (s *fakeStore) LatestCandle(_ string, tf domain.Timeframe) (domain.Candle, bool, error) {
+	if err := s.failOn[tf]; err != nil {
+		return domain.Candle{}, false, err
+	}
+
+	var latest domain.Candle
+	ok := false
+	for _, c := range s.data[tf] {
+		if !ok || c.OpenTime.After(latest.OpenTime) {
+			latest, ok = c, true
+		}
+	}
+
+	return latest, ok, nil
 }
