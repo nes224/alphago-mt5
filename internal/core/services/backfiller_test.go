@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -142,4 +143,26 @@ func TestBackfiller_SecondRunResumesFromLatest(t *testing.T) {
 		t.Errorf("stored = %d, want %d (no duplicates)", len(s.data[domain.TimeframeM1]), want)
 	}
 
+}
+
+func TestBackfiller_StoreErrorSkipsOnlyThatTimeframe(t *testing.T) {
+	h := &fakeHistory{now: testNow}
+	s := newFakeStore()
+	s.failOn[domain.TimeframeM5] = errors.New("corrupt file")
+
+	rep := NewBackfiller(h, s, nil ,quite()).Run(context.Background(), "XAUUSDm")
+
+	if rep.OK() {
+		t.Fatal("report should not be OK")
+	}
+
+	for _, res := range rep.Results {
+		bad := res.Timeframe == domain.TimeframeM5
+		if bad != (res.Err != "") {
+			t.Errorf("%s: err = %q", res.Timeframe, res.Err)
+		}
+	}
+	if len(h.requests) != len(domain.AllTimeframes)-1 {
+		t.Errorf("requests = %d, want %d", len(h.requests), len(domain.AllTimeframes) - 1)
+	}
 }
