@@ -2,6 +2,9 @@ package services
 
 import (
 	"context"
+	"io"
+	"log/slog"
+	"testing"
 	"time"
 
 	"github.com/nes224/alphago-mt5/internal/core/domain"
@@ -20,9 +23,13 @@ type fakeHistory struct {
 }
 
 type fakeStore struct {
-	data map[domain.Timeframe]map[int64]domain.Candle
+	data   map[domain.Timeframe]map[int64]domain.Candle
 	failOn map[domain.Timeframe]error
 }
+
+var testNow = time.Date(2026, 10, 26, 3, 37, 30, 0, time.UTC)
+
+func quite() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 func (f *fakeHistory) ServerTime(context.Context, string) (time.Time, error) {
 	return f.now, f.timeErr
@@ -81,4 +88,34 @@ func (s *fakeStore) WriteCandles(_ string, tf domain.Timeframe, candles []domain
 	}
 
 	return nil
+}
+
+func TestBackfiller_FirstRunFillsEveryTimeframe(t *testing.T) {
+	h := &fakeHistory{}
+	s := newFakeStore()
+	lookback := map[domain.Timeframe]time.Duration{}
+	for _, tf := range domain.AllTimeframes {
+		lookback[tf] = 10 * tf.Duration()
+	}
+
+	rep := NewBackfiller(h, s, lookback, quite()).Run(context.Background(), "XAUUSDm")
+
+	if !rep.OK() || len(rep.Results) != len(domain.AllTimeframes) {
+		t.Fatalf("report = %+v", rep)
+	}
+	for i, tf := range domain.AllTimeframes {
+		if got := h.requests[i]; got.tf != tf || !got.from.Equal(testNow.Add(-lookback[tf])) {
+			t.Errorf("request %d = %+v, want %s from now-lookback", i, got, tf)
+		}
+		res := rep.Results[i]
+		if res.Written == 0 || res.Written != len(s.data[tf]) {
+			t.Errorf("%s: written %d, stored %d", tf, res.Written, len(s.data[tf]))
+		}
+		for _, c := range s.data[tf] {
+			if !c.Closed {
+				t.Errorf("%s: forming candle %v was stored", tf, c.OpenTime)
+			}
+		}
+	}
+
 }
