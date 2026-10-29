@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -150,7 +151,7 @@ func TestBackfiller_StoreErrorSkipsOnlyThatTimeframe(t *testing.T) {
 	s := newFakeStore()
 	s.failOn[domain.TimeframeM5] = errors.New("corrupt file")
 
-	rep := NewBackfiller(h, s, nil ,quite()).Run(context.Background(), "XAUUSDm")
+	rep := NewBackfiller(h, s, nil, quite()).Run(context.Background(), "XAUUSDm")
 
 	if rep.OK() {
 		t.Fatal("report should not be OK")
@@ -163,6 +164,26 @@ func TestBackfiller_StoreErrorSkipsOnlyThatTimeframe(t *testing.T) {
 		}
 	}
 	if len(h.requests) != len(domain.AllTimeframes)-1 {
-		t.Errorf("requests = %d, want %d", len(h.requests), len(domain.AllTimeframes) - 1)
+		t.Errorf("requests = %d, want %d", len(h.requests), len(domain.AllTimeframes)-1)
+	}
+}
+
+// an EA failure stops the run: the remaining timeframes are reported as not attempted
+func TestBackfiller_HistoryErrorStopsTheRun(t *testing.T) {
+	h := &fakeHistory{now: testNow, failOn: map[domain.Timeframe]error{domain.TimeframeM15: errors.New("EA di not respond")}}
+	rep := NewBackfiller(h, newFakeStore(), map[domain.Timeframe]time.Duration{
+		domain.TimeframeM1: time.Hour, domain.TimeframeM5: time.Hour, domain.TimeframeM15: time.Hour,
+	}, quite()).Run(context.Background(), "XAUUSDm")
+
+	if len(h.requests) != 3 {
+		t.Errorf("requests = %d, want 3 (M1, M5, M15)", len(h.requests))
+	}
+	if len(rep.Results) != len(domain.AllTimeframes) {
+		t.Fatalf("results = %d, want one per timeframe", len(rep.Results))
+	}
+	for _, res := range rep.Results[3:] {
+		if !strings.HasPrefix(res.Err, "not attempted") {
+			t.Errorf("%s: err = %q, want not attempted", res.Timeframe, res.Err)
+		}
 	}
 }
