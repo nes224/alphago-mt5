@@ -186,4 +186,14 @@ func TestBackfiller_HistoryErrorStopsTheRun(t *testing.T) {
 			t.Errorf("%s: err = %q, want not attempted", res.Timeframe, res.Err)
 		}
 	}
+
+}
+
+func TestBackfiller_ServerTimeErrorAbortsBeforeAnyRequest(t *testing.T) {
+	h := &fakeHistory{timeErr: errors.New("dial: connection refused")}
+	rep := NewBackfiller(h, newFakeStore(), nil, quite()).Run(context.Background(), "XAUUSDm")
+
+	if rep.Err == "" || len(h.requests) != 0 || len(rep.Results) != 0 {
+		t.Fatalf("report = %+v, requests = %d", rep, len(h.requests))
+	}
 }
