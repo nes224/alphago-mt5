@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -43,5 +44,28 @@ func TestLoadGateway_ReadsNewSettings(t *testing.T) {
 		if g.BackfillLookback[tf] != d {
 			t.Errorf("lookback[%s] = %v, want %v", tf, g.BackfillLookback, d)
 		}
+	}
+}
+
+func TestLoadGateway_RejectsBadValues(t *testing.T) {
+	tests := []struct {
+		key, value, wantErr string
+	}{
+		{"SYMBOLS", "XAUUSDm,,BTCUSDm", "empty symbol"},
+		{"SYMBOLS", "XAUUSDm,XAUUSDm", "duplicate symbol"},
+		{"BACKFILL_LOOKBACK", "M1", "want TF=duration"},
+		{"BACKFILL_LOOKBACK", "W1=7d", "unknown timeframe"},
+		{"BACKFILL_LOOKBACK", "M1=xd", "bad number of days"},
+		{"BACKFILL_LOOKBACK", "M1=soon", "bad duration"},
+		{"BACKFILL_LOOKBACK", "M1=0d", "must be > 0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.key+"="+tt.value, func(t *testing.T) {
+			t.Setenv(tt.key, tt.value)
+			_, err := LoadGateway()
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("err = %v, want containing %q", err, tt.wantErr)
+			}
+		})
 	}
 }
