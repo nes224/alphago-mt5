@@ -33,3 +33,9 @@ func NewBackfillRunner(b *Backfiller, symbols []string) *BackfillRunner {
 	}
 }
 
+func (r *BackfillRunner) Trigger() {
+	select {
+	case r.trigger <- struct{}{}:
+	default:
+	}
+}
