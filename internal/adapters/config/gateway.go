@@ -61,6 +61,16 @@ func LoadGateway() (GateWay, error) {
 		return g, err
 	}
 
+	if g.Symbols, err = parseSymbols(os.Getenv("SYMBOLS")); err != nil {
+		return g, fmt.Errorf("config: SYMBOLS: %w", err)
+	}
+
+	g.CandleDataDir = envStr("CANDLE_DATA_DIR", "data/candle")
+
+	if g.BackfillLookback, err = parseLookback(os.Getenv("BACKFILL_LOOKBACK")); err != nil {
+		return g, fmt.Errorf("config: BACKFILL_LOOKBACK: %w", err)
+	}
+
 	return g, nil
 }
 
