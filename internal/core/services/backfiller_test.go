@@ -93,7 +93,7 @@ func (s *fakeStore) WriteCandles(_ string, tf domain.Timeframe, candles []domain
 }
 
 func TestBackfiller_FirstRunFillsEveryTimeframe(t *testing.T) {
-	h := &fakeHistory{}
+	h := &fakeHistory{now: testNow}
 	s := newFakeStore()
 	lookback := map[domain.Timeframe]time.Duration{}
 	for _, tf := range domain.AllTimeframes {

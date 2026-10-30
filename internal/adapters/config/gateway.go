@@ -6,6 +6,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/nes224/alphago-mt5/internal/core/domain"
 )
 
 type GateWay struct {
@@ -15,6 +17,10 @@ type GateWay struct {
 	MT5Timeout    time.Duration
 	HTTPPort      int
 	LogLevel      string
+
+	Symbols          []string
+	CandleDataDir    string
+	BackfillLookback map[domain.Timeframe]time.Duration
 }
 
 func (g GateWay) StreamAddr() string {
