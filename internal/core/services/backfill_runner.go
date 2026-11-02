@@ -24,6 +24,7 @@ type BackfillRunner struct {
 	firstDone chan struct{}
 }
 
+// BackfillStatus is a snapshot for /health and the API.
 type BackfillStatus struct {
 	Running bool     `json:"running"`
 	Runs    int64    `json:"runs"`
@@ -73,4 +74,16 @@ func (r *BackfillRunner) runOnce(ctx context.Context) {
 	}
 	r.runs.Add(1)
 	r.firstOnce.Do(func() { close(r.firstDone) })
+}
+
+func (r *BackfillRunner) Status() BackfillStatus {
+	st := BackfillStatus{Running: r.running.Load(), Runs: r.runs.Load()}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, sym := range r.symbols {
+		if rep, ok := r.last[sym]; ok {
+			st.Last = append(st.Last, rep)
+		}
+	}
+	return st
 }
