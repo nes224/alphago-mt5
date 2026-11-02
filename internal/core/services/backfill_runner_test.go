@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"sync/atomic"
 	"time"
 
@@ -29,3 +31,5 @@ func (g *gatedHistory) ServerTime(ctx context.Context, _ string) (time.Time, err
 func (g *gatedHistory) Rates(context.Context, string, domain.Timeframe, time.Time, time.Time) ([]domain.Candle, error) {
 	return nil, nil
 }
+
+func discardLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
