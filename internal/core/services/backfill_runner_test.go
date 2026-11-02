@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync/atomic"
 	"time"
+
+	"github.com/nes224/alphago-mt5/internal/core/domain"
 )
 
 // gatedHistory blocks every run in ServerTime until the test lets it go,
@@ -24,3 +26,6 @@ func (g *gatedHistory) ServerTime(ctx context.Context, _ string) (time.Time, err
 	return testNow, nil
 }
 
+func (g *gatedHistory) Rates(context.Context, string, domain.Timeframe, time.Time, time.Time) ([]domain.Candle, error) {
+	return nil, nil
+}
