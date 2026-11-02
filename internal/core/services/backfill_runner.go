@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 )
@@ -23,6 +24,12 @@ type BackfillRunner struct {
 	firstDone chan struct{}
 }
 
+type BackfillStatus struct {
+	Running bool     `json:"running"`
+	Runs    int64    `json:"runs"`
+	Last    []Report `json:"last"`
+}
+
 func NewBackfillRunner(b *Backfiller, symbols []string) *BackfillRunner {
 	return &BackfillRunner{
 		b:         b,
@@ -38,4 +45,32 @@ func (r *BackfillRunner) Trigger() {
 	case r.trigger <- struct{}{}:
 	default:
 	}
+}
+
+func (r *BackfillRunner) Run(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-r.trigger:
+			r.runOnce(ctx)
+		}
+	}
+}
+
+func (r *BackfillRunner) runOnce(ctx context.Context) {
+	r.running.Store(true)
+	defer r.running.Store(false)
+
+	for _, sym := range r.symbols {
+		if ctx.Err() != nil {
+			return
+		}
+		rep := r.b.Run(ctx, sym)
+		r.mu.Lock()
+		r.last[sym] = rep
+		r.mu.Unlock()
+	}
+	r.runs.Add(1)
+	r.firstOnce.Do(func() { close(r.firstDone) })
 }
