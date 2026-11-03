@@ -45,3 +45,13 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+func startRunner(t *testing.T, h *gatedHistory, symbols ...string) *BackfillRunner {
+	t.Helper()
+	r := NewBackfillRunner(NewBackfiller(h, newFakeStore(), nil, discardLog()), symbols)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { r.Run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+	return r
+}
