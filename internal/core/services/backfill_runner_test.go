@@ -80,3 +80,30 @@ func TestBackfillRunner_TriggersDuringRunQueueOneRerun(t *testing.T) {
 		t.Errorf("runs started = %d, want 2", got)
 	}
 }
+
+func TestBackfillRunner_FirstDoneAndStatus(t *testing.T) {
+	h := &gatedHistory{release: make(chan struct{})}
+	r := startRunner(t, h, "XAUUSDm", "BTCUSDm")
+
+	select {
+	case <- r.FirstDone():
+		t.Fatal("FirstDone closed before any run")
+	default:
+	}
+
+	r.Trigger()
+	h.release <- struct{}{} // XAUUSDm
+	h.release <- struct{}{} // BTCUSDm
+
+	select {
+	case <-r.FirstDone():
+	case <-time.After(time.Second):
+		t.Fatal("FirstDone not closed after the first run")
+	}
+
+	st := r.Status()
+	if st.Running || st.Runs != 1 || len(st.Last) != 2 || st.Last[0].Symbol != "XAUUSDm" || st.Last[1].Symbol != "BTCUSDm" {
+		t.Errorf("status = %+v", st)
+	}
+	
+}

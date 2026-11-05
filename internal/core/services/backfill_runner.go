@@ -87,3 +87,5 @@ func (r *BackfillRunner) Status() BackfillStatus {
 	}
 	return st
 }
+
+func (r *BackfillRunner) FirstDone() <-chan struct{} { return r.firstDone }
