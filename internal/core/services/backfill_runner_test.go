@@ -58,22 +58,22 @@ func startRunner(t *testing.T, h *gatedHistory, symbols ...string) *BackfillRunn
 
 func TestBackfillRunner_TriggersDuringRunQueueOneRerun(t *testing.T) {
 	h := &gatedHistory{release: make(chan struct{})}
-	r := startRunner(t, h , "XAUUSDm")
+	r := startRunner(t, h, "XAUUSDm")
 	r.Trigger()
-	
-	waitFor(t, "first run to start", func() bool { return h.calls.Load() == 1})
+
+	waitFor(t, "first run to start", func() bool { return h.calls.Load() == 1 })
 	if !r.Status().Running {
 		t.Error("status should say running")
 	}
 
-	for i := 0; i< 5; i++ {
+	for i := 0; i < 5; i++ {
 		r.Trigger()
 	}
 
 	h.release <- struct{}{}
-	waitFor(t, "second run to start", func() bool { return h.calls.Load() == 2})
+	waitFor(t, "second run to start", func() bool { return h.calls.Load() == 2 })
 	h.release <- struct{}{}
-	waitFor(t, "second run to finish", func() bool { return r.Status().Runs == 2})
+	waitFor(t, "second run to finish", func() bool { return r.Status().Runs == 2 })
 
 	time.Sleep(20 * time.Millisecond)
 	if got := h.calls.Load(); got != 2 {
@@ -86,7 +86,7 @@ func TestBackfillRunner_FirstDoneAndStatus(t *testing.T) {
 	r := startRunner(t, h, "XAUUSDm", "BTCUSDm")
 
 	select {
-	case <- r.FirstDone():
+	case <-r.FirstDone():
 		t.Fatal("FirstDone closed before any run")
 	default:
 	}
@@ -105,5 +105,24 @@ func TestBackfillRunner_FirstDoneAndStatus(t *testing.T) {
 	if st.Running || st.Runs != 1 || len(st.Last) != 2 || st.Last[0].Symbol != "XAUUSDm" || st.Last[1].Symbol != "BTCUSDm" {
 		t.Errorf("status = %+v", st)
 	}
-	
+
+}
+
+// Run must return when its context is cancelled, even in the middle of a run
+func TestBackfillRunner_StopsOneCancel(t *testing.T) {
+	h := &gatedHistory{release: make(chan struct{})}
+	r := NewBackfillRunner(NewBackfiller(h, newFakeStore(), nil, discardLog()), []string{"XAUUSDm"})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { r.Run(ctx); close(done) }()
+
+	r.Trigger()
+	waitFor(t, "run to start", func() bool { return h.calls.Load() == 1 })
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
 }
