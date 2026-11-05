@@ -25,6 +25,10 @@ type StreamClient struct {
 	minBackoff  time.Duration
 	maxBackoff  time.Duration
 	connected   atomic.Bool
+
+	// OnConnect, if set, is called after every successful connect
+	// (the first one and each reconnect). It must return quickly.
+	OnConnect func()
 }
 
 type wireEvent struct {
@@ -86,6 +90,9 @@ func (c *StreamClient) session(ctx context.Context) error {
 	c.connected.Store(true)
 	defer c.connected.Store(false)
 	c.log.Info("connected to EA stream")
+	if c.OnConnect != nil {
+		c.OnConnect()
+	}
 
 	// ปิด conn เมื่อ ctx ถูก cancel เพื่อปลด scanner.Scan() ที่ block อยู่
 	stop := context.AfterFunc(ctx, func() { conn.Close() })

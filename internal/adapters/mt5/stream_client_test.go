@@ -114,3 +114,47 @@ func TestStreamClient_ReconnectsAfterEADrops(t *testing.T) {
 	}
 
 }
+
+func TestStreamClient_OnConnectEveryConnect(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer ln.Close()
+
+	go func() {
+		for i := 0; i < 2; i++ {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			conn.Close()
+		}
+	}()
+
+	connected := make(chan struct{}, 10)
+	c := NewStreamClient(ln.Addr().String(), &recorder{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	c.minBackoff = 10 * time.Millisecond
+	c.OnConnect = func() {
+		select {
+		case connected <- struct{}{}:
+		default:
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-connected:
+		case <-ctx.Done():
+			t.Fatalf("OnConnect called %d times before timeout, want 2", i)
+		}
+	}
+	cancel()
+	<-done
+}
