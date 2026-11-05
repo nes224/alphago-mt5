@@ -55,3 +55,28 @@ func startRunner(t *testing.T, h *gatedHistory, symbols ...string) *BackfillRunn
 	t.Cleanup(func() { cancel(); <-done })
 	return r
 }
+
+func TestBackfillRunner_TriggersDuringRunQueueOneRerun(t *testing.T) {
+	h := &gatedHistory{release: make(chan struct{})}
+	r := startRunner(t, h , "XAUUSDm")
+	r.Trigger()
+	
+	waitFor(t, "first run to start", func() bool { return h.calls.Load() == 1})
+	if !r.Status().Running {
+		t.Error("status should say running")
+	}
+
+	for i := 0; i< 5; i++ {
+		r.Trigger()
+	}
+
+	h.release <- struct{}{}
+	waitFor(t, "second run to start", func() bool { return h.calls.Load() == 2})
+	h.release <- struct{}{}
+	waitFor(t, "second run to finish", func() bool { return r.Status().Runs == 2})
+
+	time.Sleep(20 * time.Millisecond)
+	if got := h.calls.Load(); got != 2 {
+		t.Errorf("runs started = %d, want 2", got)
+	}
+}
