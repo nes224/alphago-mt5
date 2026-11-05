@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/nes224/alphago-mt5/internal/adapters/candlefile"
 	"github.com/nes224/alphago-mt5/internal/adapters/config"
 	"github.com/nes224/alphago-mt5/internal/adapters/logging"
 	"github.com/nes224/alphago-mt5/internal/adapters/mt5"
@@ -30,6 +32,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if len(cfg.Symbols) == 0 {
+		return errors.New("config: SYMBOLS is required, e.g. SYMBOLS=XAUUSDm")
+	}
 
 	var level slog.Level
 	if err := level.UnmarshalText([]byte(cfg.LogLevel)); err != nil {
@@ -45,6 +50,19 @@ func run() error {
 	gw := services.NewGatewayService(pub, log)
 	stream := mt5.NewStreamClient(cfg.StreamAddr(), gw, log)
 
+	// backfill: defaults from services, overridden by BACKFILL_LOOKBACK
+	lookback := maps.Clone(services.DefaultLookback)
+	maps.Copy(lookback, cfg.BackfillLookback)
+
+	cmd := mt5.NewCommandClient(cfg.CmdAddr(), cfg.MT5Timeout, log)
+	defer cmd.Close()
+	store := candlefile.Store{Root: cfg.CandleDataDir}
+	runner := services.NewBackfillRunner(services.NewBackfiller(cmd, store, lookback, log), cfg.Symbols)
+
+	// every (re)connect to the EA may follow a gap, so fill it
+	stream.OnConnect = runner.Trigger
+	go runner.Run(ctx)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		connected := stream.Connected()
@@ -55,7 +73,9 @@ func run() error {
 		json.NewEncoder(w).Encode(map[string]any{
 			"status":     map[bool]string{true: "ok", false: "degraded"}[connected],
 			"mt5_stream": connected,
+			"mt5_cmd":    cmd.Connected(),
 			"gateway":    gw.Stats(),
+			"backfill":   runner.Status(),
 		})
 	})
 
