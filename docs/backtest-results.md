@@ -51,6 +51,7 @@ choosing parameters by past results there is overfitting.
 ## Reproduce
 
 ```bash
+cd api
 go run ./cmd/backtest -symbol XAUUSDm -tf Daily -split 0.7
 go run ./cmd/backtest -symbol XAUUSDm -tf H1 -filter Daily -split 0.7
 go run ./cmd/backtest -symbol XAUUSDm -tf H1 -filter Daily -split 0.7 -grid

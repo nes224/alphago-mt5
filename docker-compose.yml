@@ -4,9 +4,9 @@
 # MT5 and the EA keep running on the host; the gateway reaches them at host.docker.internal.
 services:
   api:
-    build: .
+    build: ./api
     restart: unless-stopped
-    env_file: app.env # SYMBOLS, MT5_PORT, MT5_STREAM_PORT, MT5_TIMEOUT_SECONDS, ...
+    env_file: ./api/app.env # SYMBOLS, MT5_PORT, MT5_STREAM_PORT, MT5_TIMEOUT_SECONDS, ...
     environment:
       MT5_HOST: host.docker.internal
       GATEWAY_HTTP_PORT: "8081"
@@ -17,7 +17,7 @@ services:
     ports:
       - "8081:8081"
     volumes:
-      - ./data:/app/data
+      - ./api/data:/app/data
 
   web:
     build:
