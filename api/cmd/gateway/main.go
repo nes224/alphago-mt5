@@ -61,7 +61,7 @@ func run() error {
 	cmd := mt5.NewCommandClient(cfg.CmdAddr(), cfg.MT5Timeout, log)
 	defer cmd.Close()
 	store := candlefile.Store{Root: cfg.CandleDataDir}
-	runner := services.NewBackfillRunner(services.NewBackfiller(cmd, store, lookback, log), cfg.Symbols)
+	runner := services.NewBackfillRunner(services.NewBackfiller(cmd, store, lookback, log), services.StaticSymbols(cfg.Symbols))
 
 	// every (re)connect to the EA may follow a gap, so fill it
 	stream.OnConnect = runner.Trigger

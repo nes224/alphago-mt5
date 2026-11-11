@@ -49,7 +49,7 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 
 func startRunner(t *testing.T, h *gatedHistory, symbols ...string) *BackfillRunner {
 	t.Helper()
-	r := NewBackfillRunner(NewBackfiller(h, newFakeStore(), nil, discardLog()), symbols)
+	r := NewBackfillRunner(NewBackfiller(h, newFakeStore(), nil, discardLog()), StaticSymbols(symbols))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { r.Run(ctx); close(done) }()
@@ -112,7 +112,7 @@ func TestBackfillRunner_FirstDoneAndStatus(t *testing.T) {
 // Run must return when its context is cancelled, even in the middle of a run
 func TestBackfillRunner_StopsOneCancel(t *testing.T) {
 	h := &gatedHistory{release: make(chan struct{})}
-	r := NewBackfillRunner(NewBackfiller(h, newFakeStore(), nil, discardLog()), []string{"XAUUSDm"})
+	r := NewBackfillRunner(NewBackfiller(h, newFakeStore(), nil, discardLog()), StaticSymbols{"XAUUSDm"})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { r.Run(ctx); close(done) }()
@@ -148,7 +148,7 @@ func (f *flakyHistory) Rates(context.Context, string, domain.Timeframe, time.Tim
 // a failed run is retried on its own, without a new trigger
 func TestBackfillRunner_RetriesAfterFailure(t *testing.T) {
 	h := &flakyHistory{fails: 2}
-	r := NewBackfillRunner(NewBackfiller(h, newFakeStore(), nil, discardLog()), []string{"XAUUSDm"})
+	r := NewBackfillRunner(NewBackfiller(h, newFakeStore(), nil, discardLog()), StaticSymbols{"XAUUSDm"})
 	r.RetryAfter = 10 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

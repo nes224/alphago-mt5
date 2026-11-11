@@ -12,7 +12,7 @@ import (
 // in progress queues exactly one more run, however many times it is called.
 type BackfillRunner struct {
 	b       *Backfiller
-	symbols []string
+	symbols SymbolSource
 	trigger chan struct{}
 
 	// RetryAfter is how long to wait before running again after a failed run.
@@ -35,7 +35,18 @@ type BackfillStatus struct {
 	Last    []Report `json:"last"`
 }
 
-func NewBackfillRunner(b *Backfiller, symbols []string) *BackfillRunner {
+// SymbolSource gives the symbols to backfill; it is read at the start of every run,
+// so symbols added or removed at runtime are picked up by the next run.
+type SymbolSource interface {
+	List() []string
+}
+
+// StaticSymbols is a fixed SymbolSource.
+type StaticSymbols []string
+
+func (s StaticSymbols) List() []string { return s }
+
+func NewBackfillRunner(b *Backfiller, symbols SymbolSource) *BackfillRunner {
 	return &BackfillRunner{
 		b:          b,
 		symbols:    symbols,
@@ -75,7 +86,7 @@ func (r *BackfillRunner) runOnce(ctx context.Context) bool {
 	defer r.running.Store(false)
 
 	ok := true
-	for _, sym := range r.symbols {
+	for _, sym := range r.symbols.List() {
 		if ctx.Err() != nil {
 			return false
 		}
@@ -94,7 +105,7 @@ func (r *BackfillRunner) Status() BackfillStatus {
 	st := BackfillStatus{Running: r.running.Load(), Runs: r.runs.Load()}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, sym := range r.symbols {
+	for _, sym := range r.symbols.List() {
 		if rep, ok := r.last[sym]; ok {
 			st.Last = append(st.Last, rep)
 		}
