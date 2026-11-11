@@ -21,6 +21,22 @@ docker compose up --build
 
 MT5 keeps running on the host; the API container reaches it at `host.docker.internal`.
 
+## Symbols
+
+The symbols you can trade are the ones in MT5's **Market Watch** (right click → Symbols to show more).
+The EA reports them with the `ACCOUNT_INFO` command.
+
+- In the dashboard, click **Symbols** to add or remove tracked symbols.
+- Tracked symbols are saved in `api/data/symbols.json`. `SYMBOLS` in `app.env` only seeds that file on the first run.
+- Live ticks come only from the chart the EA is attached to. Other symbols update from MT5 history after every closed M1 candle of that chart (about once a minute).
+
+| Endpoint | What it does |
+| --- | --- |
+| `GET /api/broker` | account info and every symbol in Market Watch |
+| `GET /api/symbols` | tracked symbols |
+| `POST /api/symbols` `{"symbol":"BTCUSDm"}` | track a symbol (must be in Market Watch), then backfill it |
+| `DELETE /api/symbols/{symbol}` | stop tracking (candle files are kept) |
+
 ## Run without Docker
 
 ```bash
