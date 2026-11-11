@@ -1,0 +1,9 @@
+.git
+data
+tmp
+bin
+web
+docs
+*.env
+*.mq5
+*.bundle
