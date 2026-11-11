@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/nes224/alphago-mt5/api/internal/adapters/fanout"
 	"github.com/nes224/alphago-mt5/api/internal/adapters/logging"
 	"github.com/nes224/alphago-mt5/api/internal/adapters/mt5"
+	"github.com/nes224/alphago-mt5/api/internal/adapters/symbolfile"
 	"github.com/nes224/alphago-mt5/api/internal/core/services"
 )
 
@@ -34,10 +36,6 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if len(cfg.Symbols) == 0 {
-		return errors.New("config: SYMBOLS is required, e.g. SYMBOLS=XAUUSDm")
-	}
-
 	var level slog.Level
 	if err := level.UnmarshalText([]byte(cfg.LogLevel)); err != nil {
 		return fmt.Errorf("LOG_LEVEL: %w", err)
@@ -61,7 +59,28 @@ func run() error {
 	cmd := mt5.NewCommandClient(cfg.CmdAddr(), cfg.MT5Timeout, log)
 	defer cmd.Close()
 	store := candlefile.Store{Root: cfg.CandleDataDir}
-	runner := services.NewBackfillRunner(services.NewBackfiller(cmd, store, lookback, log), services.StaticSymbols(cfg.Symbols))
+
+	// tracked symbols: saved next to the candle folder; SYMBOLS only seeds the first run
+	symbolsPath := filepath.Join(filepath.Dir(cfg.CandleDataDir), "symbols.json")
+	initial, found, err := symbolfile.Load(symbolsPath)
+	if err != nil {
+		return err
+	}
+	if !found {
+		initial = cfg.Symbols
+	}
+	symbols := services.NewSymbolSet(initial, func(l []string) error { return symbolfile.Save(symbolsPath, l) })
+	if !found {
+		if err := symbolfile.Save(symbolsPath, symbols.List()); err != nil {
+			return fmt.Errorf("save %s: %w", symbolsPath, err)
+		}
+	}
+	if len(symbols.List()) == 0 {
+		log.Warn("no symbols tracked; add one from the web app or set SYMBOLS")
+	}
+	log.Info("tracking symbols", "symbols", symbols.List(), "file", symbolsPath)
+
+	runner := services.NewBackfillRunner(services.NewBackfiller(cmd, store, lookback, log), symbols)
 
 	// every (re)connect to the EA may follow a gap, so fill it
 	stream.OnConnect = runner.Trigger
@@ -70,7 +89,13 @@ func run() error {
 	go runner.Run(ctx)
 
 	mux := http.NewServeMux()
-	apiServer := &api.Server{Hub: hub, DataDir: cfg.CandleDataDir, Symbols: cfg.Symbols}
+	apiServer := &api.Server{
+		Hub:           hub,
+		DataDir:       cfg.CandleDataDir,
+		Symbols:       symbols,
+		Broker:        brokerInfo(cmd),
+		OnSymbolAdded: runner.Trigger,
+	}
 	apiServer.Register(mux)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		connected := stream.Connected()
@@ -122,4 +147,18 @@ func run() error {
 	}
 
 	return err
+}
+
+// brokerInfo adapts the EA's ACCOUNT_INFO answer for the API.
+func brokerInfo(cmd *mt5.CommandClient) func(context.Context) (api.BrokerInfo, error) {
+	return func(ctx context.Context) (api.BrokerInfo, error) {
+		a, err := cmd.AccountInfo(ctx)
+		if err != nil {
+			return api.BrokerInfo{}, err
+		}
+		return api.BrokerInfo{
+			Broker: a.Broker, Login: a.Login, AccountType: a.AccountType, Currency: a.Currency,
+			Balance: a.Balance, Equity: a.Equity, Leverage: a.Leverage, Symbols: a.Symbols,
+		}, nil
+	}
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/nes224/alphago-mt5/api/internal/adapters/candlefile"
 	"github.com/nes224/alphago-mt5/api/internal/core/domain"
+	"github.com/nes224/alphago-mt5/api/internal/core/services"
 )
 
 func tick(symbol string, sec int) domain.Tick {
@@ -68,7 +69,13 @@ func newTestServer(t *testing.T) (*Server, *httptest.Server) {
 	if err := candlefile.WriteCandles(root, "XAUUSDm", domain.TimeframeH1, candles); err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{Hub: NewHub(), DataDir: root, Symbols: []string{"XAUUSDm"}, Heartbeat: time.Hour}
+	s := &Server{
+		Hub: NewHub(), DataDir: root, Heartbeat: time.Hour,
+		Symbols: services.NewSymbolSet([]string{"XAUUSDm"}, nil),
+		Broker: func(context.Context) (BrokerInfo, error) {
+			return BrokerInfo{Broker: "Test Broker", Symbols: []string{"XAUUSDm", "BTCUSDm"}}, nil
+		},
+	}
 	mux := http.NewServeMux()
 	s.Register(mux)
 	ts := httptest.NewServer(mux)
