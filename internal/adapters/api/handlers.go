@@ -1,10 +1,8 @@
-package web
+package api
 
 import (
-	"embed"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"strconv"
 	"time"
@@ -13,10 +11,7 @@ import (
 	"github.com/nes224/alphago-mt5/internal/core/domain"
 )
 
-//go:embed static
-var static embed.FS
-
-// Server serves the dashboard page and its API.
+// Server serves the dashboard API.
 type Server struct {
 	Hub       *Hub
 	DataDir   string   // candle CSV root (CANDLE_DATA_DIR)
@@ -24,15 +19,12 @@ type Server struct {
 	Heartbeat time.Duration
 }
 
-// Register adds the dashboard routes to mux:
+// Register adds the API routes to mux:
 //
-//	GET /                 the dashboard page
 //	GET /api/symbols      configured symbols
 //	GET /api/candles      stored candles: ?symbol=XAUUSDm&tf=H1&limit=500
 //	GET /api/stream       live ticks as SSE: ?symbol=XAUUSDm
 func (s *Server) Register(mux *http.ServeMux) {
-	page, _ := fs.Sub(static, "static")
-	mux.Handle("GET /", http.FileServerFS(page))
 	mux.HandleFunc("GET /api/symbols", s.symbols)
 	mux.HandleFunc("GET /api/candles", s.candles)
 	mux.HandleFunc("GET /api/stream", s.stream)
@@ -132,4 +124,21 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// CORS lets the web app at origin (e.g. http://localhost:3000) call the API from the browser.
+func CORS(origin string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+		}
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

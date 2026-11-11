@@ -21,6 +21,8 @@ type GateWay struct {
 	Symbols          []string
 	CandleDataDir    string
 	BackfillLookback map[domain.Timeframe]time.Duration
+
+	WebOrigin string // WEB_ORIGIN: the web app allowed to call the API from a browser
 }
 
 func (g GateWay) StreamAddr() string {
@@ -66,6 +68,7 @@ func LoadGateway() (GateWay, error) {
 	}
 
 	g.CandleDataDir = envStr("CANDLE_DATA_DIR", "data/candle")
+	g.WebOrigin = envStr("WEB_ORIGIN", "http://localhost:3000")
 
 	if g.BackfillLookback, err = parseLookback(os.Getenv("BACKFILL_LOOKBACK")); err != nil {
 		return g, fmt.Errorf("config: BACKFILL_LOOKBACK: %w", err)

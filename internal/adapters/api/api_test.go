@@ -1,4 +1,4 @@
-package web
+package api
 
 import (
 	"bufio"
@@ -106,15 +106,30 @@ func TestCandles_BadRequest(t *testing.T) {
 	}
 }
 
-func TestPage_IsServed(t *testing.T) {
-	_, ts := newTestServer(t)
-	resp, err := http.Get(ts.URL + "/")
+func TestCORS_AllowsWebOrigin(t *testing.T) {
+	h := CORS("http://localhost:3000", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodOptions, ts.URL+"/api/candles", nil)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
-		t.Errorf("status %d, content type %q", resp.StatusCode, resp.Header.Get("Content-Type"))
+	if resp.StatusCode != http.StatusNoContent || resp.Header.Get("Access-Control-Allow-Origin") != "http://localhost:3000" {
+		t.Errorf("preflight: status %d, allow-origin %q", resp.StatusCode, resp.Header.Get("Access-Control-Allow-Origin"))
+	}
+
+	resp, err = http.Get(ts.URL + "/api/candles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Access-Control-Allow-Origin") != "http://localhost:3000" {
+		t.Errorf("get: status %d, allow-origin %q", resp.StatusCode, resp.Header.Get("Access-Control-Allow-Origin"))
 	}
 }
 

@@ -13,12 +13,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nes224/alphago-mt5/internal/adapters/api"
 	"github.com/nes224/alphago-mt5/internal/adapters/candlefile"
 	"github.com/nes224/alphago-mt5/internal/adapters/config"
 	"github.com/nes224/alphago-mt5/internal/adapters/fanout"
 	"github.com/nes224/alphago-mt5/internal/adapters/logging"
 	"github.com/nes224/alphago-mt5/internal/adapters/mt5"
-	"github.com/nes224/alphago-mt5/internal/adapters/web"
 	"github.com/nes224/alphago-mt5/internal/core/services"
 )
 
@@ -49,7 +49,7 @@ func run() error {
 	defer cancel()
 
 	// live events go to the log and to every open dashboard
-	hub := web.NewHub()
+	hub := api.NewHub()
 	pub := fanout.Publisher{logging.NewPublisher(log), hub}
 	gw := services.NewGatewayService(pub, log)
 	stream := mt5.NewStreamClient(cfg.StreamAddr(), gw, log)
@@ -70,8 +70,8 @@ func run() error {
 	go runner.Run(ctx)
 
 	mux := http.NewServeMux()
-	dashboard := &web.Server{Hub: hub, DataDir: cfg.CandleDataDir, Symbols: cfg.Symbols}
-	dashboard.Register(mux)
+	apiServer := &api.Server{Hub: hub, DataDir: cfg.CandleDataDir, Symbols: cfg.Symbols}
+	apiServer.Register(mux)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		connected := stream.Connected()
 		w.Header().Set("Content-Type", "application/json")
@@ -89,7 +89,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
-		Handler:           mux,
+		Handler:           api.CORS(cfg.WebOrigin, mux),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

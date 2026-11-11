@@ -9,14 +9,14 @@ import (
 )
 
 func TestLoadGateway_Defaults(t *testing.T) {
-	for _, k := range []string{"SYMBOLS", "CANDLE_DATA_DIR", "BACKFILL_LOOKBACK"} {
+	for _, k := range []string{"SYMBOLS", "CANDLE_DATA_DIR", "BACKFILL_LOOKBACK", "WEB_ORIGIN"} {
 		t.Setenv(k, "")
 	}
 	g, err := LoadGateway()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(g.Symbols) != 0 || g.CandleDataDir != "data/candle" || len(g.BackfillLookback) != 0 {
+	if len(g.Symbols) != 0 || g.CandleDataDir != "data/candle" || len(g.BackfillLookback) != 0 || g.WebOrigin != "http://localhost:3000" {
 		t.Errorf("got symbols=%v dir=%q lookback=%v", g.Symbols, g.CandleDataDir, g.BackfillLookback)
 	}
 }

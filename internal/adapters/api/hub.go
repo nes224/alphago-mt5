@@ -1,6 +1,6 @@
-// Package web serves the dashboard: a candlestick chart of the stored candles
-// that keeps updating from live ticks pushed over Server-Sent Events (SSE).
-package web
+// Package api is the gateway's HTTP API for the web dashboard (the Next.js app in web/):
+// stored candles as JSON and live ticks pushed over Server-Sent Events (SSE).
+package api
 
 import (
 	"context"
