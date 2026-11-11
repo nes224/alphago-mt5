@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { CandlestickData, UTCTimestamp } from "lightweight-charts";
 import PriceChart from "./PriceChart";
+import SymbolManager from "./SymbolManager";
 import {
   TIMEFRAMES,
   fetchCandles,
@@ -29,8 +30,15 @@ export default function Dashboard() {
   const [live, setLive] = useState(false);
   const [health, setHealth] = useState<Health | null>(null);
   const [hover, setHover] = useState<CandlestickData<UTCTimestamp> | null>(null);
+  const [managing, setManaging] = useState(false);
 
-  // symbols from the gateway config
+  // tracked symbols changed in the Symbols panel
+  const onSymbolsChange = (list: string[], added?: string) => {
+    setSymbols(list);
+    setSymbol((cur) => added ?? (cur && list.includes(cur) ? cur : (list[0] ?? null)));
+  };
+
+  // tracked symbols
   useEffect(() => {
     fetchSymbols()
       .then((s) => {
@@ -40,7 +48,10 @@ export default function Dashboard() {
       .catch((e: Error) => setError(`cannot reach the API: ${e.message}`));
   }, []);
 
-  // stored candles for the chosen symbol and timeframe
+  const report = health?.backfill?.last?.find((r) => r.symbol === symbol);
+
+  // stored candles for the chosen symbol and timeframe, reloaded after each backfill
+  // (symbols without a live feed only move when the backfill stores new candles)
   useEffect(() => {
     if (!symbol) return;
     let cancelled = false;
@@ -51,10 +62,11 @@ export default function Dashboard() {
     return () => {
       cancelled = true;
     };
-  }, [symbol, tf]);
+  }, [symbol, tf, report?.finished_at]);
 
   // live ticks for the chosen symbol
   useEffect(() => {
+    setTick(null);
     if (!symbol) return;
     const es = new EventSource(streamURL(symbol));
     es.onopen = () => setLive(true);
@@ -83,7 +95,6 @@ export default function Dashboard() {
   const tfSeconds = TIMEFRAMES.find((x) => x.id === (loaded?.tf ?? tf))!.seconds;
   const fmt = (v?: number) => (v === undefined ? "-" : v.toFixed(digits));
 
-  const report = health?.backfill?.last?.find((r) => r.symbol === symbol);
   const backfill = health?.backfill?.running
     ? "backfill running"
     : report
@@ -92,6 +103,7 @@ export default function Dashboard() {
 
   let message: string | null = error;
   if (!message && !ready) message = "loading...";
+  if (!message && !symbol) message = "no symbols tracked: click Symbols to add one";
   if (!message && candles.length === 0) message = "no candles stored for this timeframe yet";
 
   return (
@@ -105,6 +117,7 @@ export default function Dashboard() {
             </option>
           ))}
         </select>
+        <button onClick={() => setManaging(true)}>Symbols</button>
         <div className="tfs" role="group" aria-label="Timeframe">
           {TIMEFRAMES.map((x) => (
             <button key={x.id} className={x.id === tf ? "on" : ""} onClick={() => setTf(x.id)}>
@@ -128,8 +141,8 @@ export default function Dashboard() {
         </div>
         <div className="status">
           <span>
-            <i className={live ? "dot ok" : "dot"} />
-            {live ? "live" : "offline"}
+            <i className={live && tick ? "dot ok" : "dot"} />
+            {!live ? "offline" : tick ? "live" : "no live feed"}
           </span>
           <span>
             <i className={health?.mt5_stream ? "dot ok" : "dot"} />
@@ -153,6 +166,9 @@ export default function Dashboard() {
         />
         {message && <div className="message">{message}</div>}
       </main>
+      {managing && (
+        <SymbolManager tracked={symbols} onChange={onSymbolsChange} onClose={() => setManaging(false)} />
+      )}
     </div>
   );
 }

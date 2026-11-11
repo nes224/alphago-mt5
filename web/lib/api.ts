@@ -29,14 +29,41 @@ export type Health = {
   backfill?: { running: boolean; runs: number; last?: BackfillReport[] };
 };
 
-async function getJSON<T>(path: string): Promise<T> {
-  const res = await fetch(API_URL + path, { cache: "no-store" });
-  const body = await res.json();
+/** The trading account and the symbols the broker offers (MT5 Market Watch). */
+export type BrokerInfo = {
+  broker: string;
+  login: number;
+  account_type: string;
+  currency: string;
+  balance: number;
+  equity: number;
+  leverage: number;
+  symbols: string[];
+};
+
+async function getJSON<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(API_URL + path, { cache: "no-store", ...init });
+  const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(body?.error ?? res.statusText);
   return body as T;
 }
 
+/** Tracked symbols. */
 export const fetchSymbols = () => getJSON<string[]>("/api/symbols");
+
+export const fetchBroker = () => getJSON<BrokerInfo>("/api/broker");
+
+/** Starts tracking a symbol; returns the new tracked list. */
+export const addSymbol = (symbol: string) =>
+  getJSON<string[]>("/api/symbols", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ symbol }),
+  });
+
+/** Stops tracking a symbol (stored candles are kept); returns the new tracked list. */
+export const removeSymbol = (symbol: string) =>
+  getJSON<string[]>(`/api/symbols/${encodeURIComponent(symbol)}`, { method: "DELETE" });
 
 export const fetchCandles = (symbol: string, tf: TimeframeId, limit = 1500) =>
   getJSON<Candle[]>(`/api/candles?symbol=${encodeURIComponent(symbol)}&tf=${tf}&limit=${limit}`);

@@ -29,3 +29,17 @@ select, button { background: var(--bg); color: var(--text); border: 1px solid va
   .status { margin-left: 0; }
   .legend { white-space: normal; right: 60px; }
 }
+button:disabled { opacity: 0.5; cursor: default; }
+.overlay { position: fixed; inset: 0; z-index: 10; display: flex; align-items: flex-start; justify-content: center; padding: 60px 16px 16px; background: rgba(0, 0, 0, 0.5); }
+.panel { width: 100%; max-width: 420px; max-height: calc(100vh - 80px); display: flex; flex-direction: column; gap: 8px; padding: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+.panel-head { display: flex; justify-content: space-between; align-items: center; }
+.panel h4 { margin: 8px 0 0; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.panel p { margin: 0; }
+.panel input { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; font: inherit; }
+.sym-list { list-style: none; margin: 0; padding: 0; }
+.sym-list.scroll { overflow-y: auto; min-height: 80px; flex: 1; }
+.sym-list li { display: flex; justify-content: space-between; align-items: center; padding: 5px 2px; border-bottom: 1px solid var(--line); }
+.sym-list button { padding: 2px 8px; font-size: 12px; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.err { color: var(--down); }
