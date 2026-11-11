@@ -55,6 +55,15 @@ func (r Report) OK() bool {
 	return true
 }
 
+// Written is the number of closed candles written over all timeframes.
+func (r Report) Written() int {
+	n := 0
+	for _, res := range r.Results {
+		n += res.Written
+	}
+	return n
+}
+
 func (b *Backfiller) fill(ctx context.Context, symbol string, tf domain.Timeframe, now time.Time) (res TFResult, historyErr error) {
 	res.Timeframe = tf
 	log := b.log.With("symbol", symbol, "tf", tf)
@@ -127,6 +136,12 @@ func (b *Backfiller) run(ctx context.Context, symbol string, tfs []domain.Timefr
 		}
 	}
 	rep.FinishedAt = time.Now()
+	level := slog.LevelInfo
+	if rep.OK() && rep.Written() == 0 {
+		level = slog.LevelDebug // nothing new: keep the log quiet on frequent runs
+	}
+	b.log.Log(ctx, level, "backfill done", "symbol", symbol, "ok", rep.OK(), "written", rep.Written(),
+		"took", rep.FinishedAt.Sub(rep.StartedAt).Round(time.Millisecond))
 	return rep
 }
 
@@ -137,4 +152,3 @@ func (b *Backfiller) Run(ctx context.Context, symbol string) Report {
 func (b *Backfiller) RunTF(ctx context.Context, symbol string, tf domain.Timeframe) Report {
 	return b.run(ctx, symbol, []domain.Timeframe{tf})
 }
-

@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"sync/atomic"
@@ -124,5 +125,44 @@ func TestBackfillRunner_StopsOneCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("Run did not return after cancel")
+	}
+}
+
+// flakyHistory fails ServerTime for the first `fails` calls, then succeeds.
+type flakyHistory struct {
+	fails int32
+	calls atomic.Int32
+}
+
+func (f *flakyHistory) ServerTime(context.Context, string) (time.Time, error) {
+	if f.calls.Add(1) <= f.fails {
+		return time.Time{}, errors.New("EA did not respond")
+	}
+	return testNow, nil
+}
+
+func (f *flakyHistory) Rates(context.Context, string, domain.Timeframe, time.Time, time.Time) ([]domain.Candle, error) {
+	return nil, nil
+}
+
+// a failed run is retried on its own, without a new trigger
+func TestBackfillRunner_RetriesAfterFailure(t *testing.T) {
+	h := &flakyHistory{fails: 2}
+	r := NewBackfillRunner(NewBackfiller(h, newFakeStore(), nil, discardLog()), []string{"XAUUSDm"})
+	r.RetryAfter = 10 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { r.Run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	r.Trigger() // run 1 fails, run 2 fails, run 3 succeeds
+	waitFor(t, "a successful run", func() bool {
+		st := r.Status()
+		return st.Runs == 3 && len(st.Last) == 1 && st.Last[0].OK()
+	})
+
+	time.Sleep(50 * time.Millisecond) // no more retries after success
+	if got := h.calls.Load(); got != 3 {
+		t.Errorf("runs = %d, want 3", got)
 	}
 }

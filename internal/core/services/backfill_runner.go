@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // BackfillRunner runs the Backfiller for every symbol in a single goroutine.
@@ -13,6 +14,9 @@ type BackfillRunner struct {
 	b       *Backfiller
 	symbols []string
 	trigger chan struct{}
+
+	// RetryAfter is how long to wait before running again after a failed run.
+	RetryAfter time.Duration
 
 	running atomic.Bool
 	runs    atomic.Int64
@@ -33,11 +37,12 @@ type BackfillStatus struct {
 
 func NewBackfillRunner(b *Backfiller, symbols []string) *BackfillRunner {
 	return &BackfillRunner{
-		b:         b,
-		symbols:   symbols,
-		trigger:   make(chan struct{}, 1),
-		last:      make(map[string]Report),
-		firstDone: make(chan struct{}),
+		b:          b,
+		symbols:    symbols,
+		trigger:    make(chan struct{}, 1),
+		RetryAfter: 30 * time.Second,
+		last:       make(map[string]Report),
+		firstDone:  make(chan struct{}),
 	}
 }
 
@@ -49,31 +54,40 @@ func (r *BackfillRunner) Trigger() {
 }
 
 func (r *BackfillRunner) Run(ctx context.Context) {
+	var retry <-chan time.Time // nil = no retry pending (a nil channel never fires)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-r.trigger:
-			r.runOnce(ctx)
+		case <-retry:
+		}
+		retry = nil
+		if ok := r.runOnce(ctx); !ok && ctx.Err() == nil {
+			retry = time.After(r.RetryAfter)
 		}
 	}
 }
 
-func (r *BackfillRunner) runOnce(ctx context.Context) {
+// runOnce backfills every symbol and reports whether all of them succeeded.
+func (r *BackfillRunner) runOnce(ctx context.Context) bool {
 	r.running.Store(true)
 	defer r.running.Store(false)
 
+	ok := true
 	for _, sym := range r.symbols {
 		if ctx.Err() != nil {
-			return
+			return false
 		}
 		rep := r.b.Run(ctx, sym)
+		ok = ok && rep.OK()
 		r.mu.Lock()
 		r.last[sym] = rep
 		r.mu.Unlock()
 	}
 	r.runs.Add(1)
 	r.firstOnce.Do(func() { close(r.firstDone) })
+	return ok
 }
 
 func (r *BackfillRunner) Status() BackfillStatus {
