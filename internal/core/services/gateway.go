@@ -17,6 +17,11 @@ type GatewayService struct {
 
 	lastTickUnix atomic.Int64
 	tickCount    atomic.Int64
+
+	// OnCandleClose, if set, is called when a live M1 candle closes. The gateway
+	// uses it to fetch the broker's closed candles for every timeframe and store
+	// them, so the files stay current while it runs. It must return quickly.
+	OnCandleClose func()
 }
 
 type GatewayStats struct {
@@ -46,6 +51,9 @@ func (s *GatewayService) HandleTick(ctx context.Context, t domain.Tick) {
 	}
 	if u.Closed != nil {
 		s.pub.PublishCandle(ctx, *u.Closed)
+		if s.OnCandleClose != nil {
+			s.OnCandleClose()
+		}
 	}
 
 	s.pub.PublishCandle(ctx, u.Current)

@@ -61,6 +61,8 @@ func run() error {
 
 	// every (re)connect to the EA may follow a gap, so fill it
 	stream.OnConnect = runner.Trigger
+	// each closed live candle: fetch the broker's closed candles for every TF and store them
+	gw.OnCandleClose = runner.Trigger
 	go runner.Run(ctx)
 
 	mux := http.NewServeMux()
